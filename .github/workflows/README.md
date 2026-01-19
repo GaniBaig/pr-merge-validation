@@ -178,7 +178,7 @@ env:
 Check workflow runs in the **Actions** tab of your repository to monitor:
 - Validation success/failure rates
 - Override usage frequency
-- Common blocking patterns
+- Common blocking pattern
 
 ## Support
 
