@@ -30,4 +30,4 @@ Create a GitHub Actions workflow that ensures when a fix for a given parent issu
 
 * Use the GitHub REST API or GraphQL API to search for open PRs in the other branch containing the same issue reference.
 * The workflow should be reusable and easily adjustable for different branch pairs.
----
+-------
