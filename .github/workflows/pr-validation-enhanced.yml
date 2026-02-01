@@ -90,8 +90,8 @@ jobs:
           
           echo "Querying issues: $ISSUE_NUMBERS"
           
-          # Initialize empty file for all PRs
-          echo "[]" > all_linked_prs.json
+          # Initialize empty array for all PRs
+          > all_linked_prs_temp.json
           
           # Query each issue individually using GraphQL
           for ISSUE_REF in $(echo "$ISSUE_NUMBERS" | tr ',' ' '); do
@@ -141,39 +141,54 @@ jobs:
               -F issueNumber="$ISSUE_NUM" 2>&1)
             
             if [ $? -eq 0 ]; then
-              # Extract PRs from this issue and append to all_linked_prs.json
-              echo "$RESULT" | jq -r '.data.repository.issue.timelineItems.nodes[].source | select(. != null)' >> all_linked_prs_temp.json
+              # Extract PRs from this issue and append
+              echo "$RESULT" | jq -c '.data.repository.issue.timelineItems.nodes[].source | select(. != null)' >> all_linked_prs_temp.json
             else
               echo "⚠️ Failed to query issue #$ISSUE_NUM: $RESULT"
             fi
           done
           
           # Combine all PRs and remove duplicates
-          if [ -f all_linked_prs_temp.json ]; then
-            jq -s 'flatten | unique_by(.number)' all_linked_prs_temp.json > all_linked_prs.json
-            rm all_linked_prs_temp.json
+          if [ -s all_linked_prs_temp.json ]; then
+            jq -s 'unique_by(.number)' all_linked_prs_temp.json > all_linked_prs.json
+          else
+            echo "[]" > all_linked_prs.json
           fi
+          rm -f all_linked_prs_temp.json
           
           # Count PRs by branch (excluding drafts if configured)
           if [ "${{ env.ALLOW_DRAFT_PRS }}" = "false" ]; then
-            FILTER_DRAFT='select(.isDraft == false)'
+            FILTER_DRAFT='and .isDraft == false'
           else
-            FILTER_DRAFT='.'
+            FILTER_DRAFT=''
           fi
           
           PRIMARY_PRS=$(jq -r --arg branch "${{ env.PRIMARY_BRANCH }}" \
-            '.[] | select(.baseRefName == $branch and .state == "OPEN") | '"$FILTER_DRAFT"' | .number' \
-            all_linked_prs.json | sort -u)
+            '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
+            all_linked_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
           
           RELEASE_PRS=$(jq -r --arg branch "${{ env.RELEASE_BRANCH }}" \
-            '.[] | select(.baseRefName == $branch and .state == "OPEN") | '"$FILTER_DRAFT"' | .number' \
-            all_linked_prs.json | sort -u)
+            '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
+            all_linked_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
           
-          PRIMARY_COUNT=$(echo "$PRIMARY_PRS" | grep -c . || echo "0")
-          RELEASE_COUNT=$(echo "$RELEASE_PRS" | grep -c . || echo "0")
+          # Count PRs safely
+          if [ -z "$PRIMARY_PRS" ] || [ "$PRIMARY_PRS" = " " ]; then
+            PRIMARY_COUNT=0
+            PRIMARY_PRS=""
+          else
+            PRIMARY_COUNT=$(echo "$PRIMARY_PRS" | wc -w)
+          fi
           
-          echo "primary_prs=$(echo $PRIMARY_PRS | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
-          echo "release_prs=$(echo $RELEASE_PRS | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
+          if [ -z "$RELEASE_PRS" ] || [ "$RELEASE_PRS" = " " ]; then
+            RELEASE_COUNT=0
+            RELEASE_PRS=""
+          else
+            RELEASE_COUNT=$(echo "$RELEASE_PRS" | wc -w)
+          fi
+          
+          # Output results
+          echo "primary_prs=$(echo $PRIMARY_PRS | tr ' ' ','  | sed 's/,$//' | sed 's/^,//')" >> $GITHUB_OUTPUT
+          echo "release_prs=$(echo $RELEASE_PRS | tr ' ' ',' | sed 's/,$//' | sed 's/^,//')" >> $GITHUB_OUTPUT
           echo "primary_count=$PRIMARY_COUNT" >> $GITHUB_OUTPUT
           echo "release_count=$RELEASE_COUNT" >> $GITHUB_OUTPUT
           echo "total_prs=$((PRIMARY_COUNT + RELEASE_COUNT))" >> $GITHUB_OUTPUT
