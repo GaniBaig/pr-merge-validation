@@ -15,7 +15,7 @@ on:
 # Configuration: Update these for each release cycle
 env:
   PRIMARY_BRANCH: 'main'
-  RELEASE_BRANCH: 'release-5.3.1'
+  RELEASE_BRANCH: 'checking-2'
   # Validation rules
   REQUIRE_EXACT_MATCH: 'true'           # All issue refs must match exactly
   ALLOW_DRAFT_PRS: 'false'              # Include draft PRs in validation
