@@ -203,6 +203,18 @@ jobs:
         run: |
           CURRENT_ISSUES="${{ steps.extract_issues.outputs.issue_refs }}"
           
+          # Verify all_linked_prs.json exists and is valid
+          if [ ! -f all_linked_prs.json ]; then
+            echo "⚠️ all_linked_prs.json not found, creating empty array"
+            echo "[]" > all_linked_prs.json
+          fi
+          
+          # Validate JSON file
+          if ! jq empty all_linked_prs.json 2>/dev/null; then
+            echo "⚠️ all_linked_prs.json is invalid, creating empty array"
+            echo "[]" > all_linked_prs.json
+          fi
+          
           # For each PR in comparison branch, check if it has ALL the same issue refs
           PRIMARY_PRS="${{ steps.query_linked_prs.outputs.primary_prs }}"
           RELEASE_PRS="${{ steps.query_linked_prs.outputs.release_prs }}"
@@ -222,36 +234,51 @@ jobs:
           EXACT_MATCH_FOUND=false
           MATCHING_PR_NUMBERS=""
           
-          # Check each PR in comparison branch
-          for PR_NUM in $(echo $COMPARE_PRS | tr ',' ' '); do
-            # Get PR details from our cached data
-            PR_DATA=$(jq -r --arg num "$PR_NUM" \
-              '.[] | select(.number == ($num | tonumber))' all_linked_prs.json | head -1)
-            
-            PR_TEXT=$(echo "$PR_DATA" | jq -r '.title + " " + .body')
-            PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '#\d+' | sort -u | tr '\n' ',' | sed 's/,$//')
-            
-            echo "PR #$PR_NUM has issues: $PR_ISSUES"
-            
-            # Check if this PR has ALL the same issues
-            if [ "${{ env.REQUIRE_EXACT_MATCH }}" = "true" ]; then
-              if [ "$PR_ISSUES" = "$CURRENT_ISSUES" ]; then
-                EXACT_MATCH_FOUND=true
-                MATCHING_PR_NUMBERS="$MATCHING_PR_NUMBERS,$PR_NUM"
-                echo "✅ Exact match found in PR #$PR_NUM"
+          # Check if there are PRs to compare
+          if [ -z "$COMPARE_PRS" ]; then
+            echo "No PRs to compare in branch $COMPARE_BRANCH"
+          else
+            # Check each PR in comparison branch
+            for PR_NUM in $(echo $COMPARE_PRS | tr ',' ' '); do
+              # Skip empty PR numbers
+              if [ -z "$PR_NUM" ]; then
+                continue
               fi
-            else
-              # Check if PR has at least one matching issue
-              for ISSUE in $(echo $CURRENT_ISSUES | tr ',' ' '); do
-                if echo "$PR_ISSUES" | grep -q "$ISSUE"; then
+              
+              # Get PR details from our cached data
+              PR_DATA=$(jq -r --arg num "$PR_NUM" \
+                '.[] | select(.number == ($num | tonumber))' all_linked_prs.json 2>/dev/null | head -1)
+              
+              if [ -z "$PR_DATA" ] || [ "$PR_DATA" = "null" ]; then
+                echo "⚠️ No data found for PR #$PR_NUM in cache"
+                continue
+              fi
+              
+              PR_TEXT=$(echo "$PR_DATA" | jq -r '.title + " " + .body' 2>/dev/null)
+              PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '#\d+' | sort -u | tr '\n' ',' | sed 's/,$//')
+              
+              echo "PR #$PR_NUM has issues: $PR_ISSUES"
+              
+              # Check if this PR has ALL the same issues
+              if [ "${{ env.REQUIRE_EXACT_MATCH }}" = "true" ]; then
+                if [ "$PR_ISSUES" = "$CURRENT_ISSUES" ]; then
                   EXACT_MATCH_FOUND=true
                   MATCHING_PR_NUMBERS="$MATCHING_PR_NUMBERS,$PR_NUM"
-                  echo "✅ Partial match found in PR #$PR_NUM"
-                  break
+                  echo "✅ Exact match found in PR #$PR_NUM"
                 fi
-              done
-            fi
-          done
+              else
+                # Check if PR has at least one matching issue
+                for ISSUE in $(echo $CURRENT_ISSUES | tr ',' ' '); do
+                  if echo "$PR_ISSUES" | grep -q "$ISSUE"; then
+                    EXACT_MATCH_FOUND=true
+                    MATCHING_PR_NUMBERS="$MATCHING_PR_NUMBERS,$PR_NUM"
+                    echo "✅ Partial match found in PR #$PR_NUM"
+                    break
+                  fi
+                done
+              fi
+            done
+          fi
           
           MATCHING_PR_NUMBERS=$(echo "$MATCHING_PR_NUMBERS" | sed 's/^,//')
           
