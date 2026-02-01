@@ -446,6 +446,7 @@ jobs:
             }
             
             if (shouldBlock) {
+              const currentBranch = context.payload.pull_request?.base?.ref || 'this branch';
               commentBody += `### ⚠️ Action Required
             
             This PR is **blocked** from merging. To proceed, you must either:
@@ -455,7 +456,7 @@ jobs:
             
             #### Override Instructions:
             1. Add label: \`${{ env.OVERRIDE_LABEL }}\`
-            2. Comment with justification (e.g., "This fix is specific to ${{ github.event.pull_request.base.ref }} only")
+            2. Comment with justification (e.g., "This fix is specific to ${currentBranch} only")
             3. Re-run this workflow
             
             `;
