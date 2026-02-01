@@ -1,0 +1,305 @@
+# Cross-Branch PR Validation Configuration
+# This file defines the validation rules and behavior for the PR validation system
+
+# Version of the configuration schema
+version: "2.0"
+
+# Branch Configuration
+# Define which branches should be monitored and validated against each other
+branches:
+  # Primary branch (usually main/master)
+  primary:
+    name: "master"
+    description: "Main development branch"
+  
+  # Release branch (update per release cycle)
+  release:
+    name: "release-5.3.1"
+    description: "Current release branch"
+  
+  # Additional monitored branches (optional)
+  # Uncomment and configure if you have more branches to monitor
+  # additional:
+  #   - name: "hotfix"
+  #     description: "Hotfix branch"
+  #   - name: "develop"
+  #     description: "Development branch"
+
+# Validation Rules
+validation:
+  # Issue Reference Matching
+  issue_matching:
+    # Require exact match of all issue references between PRs
+    # true: PR-A with #123,#456 requires PR-B to have exactly #123,#456
+    # false: PR-A with #123,#456 can match PR-B with #123,#456,#789 (superset)
+    require_exact_match: true
+    
+    # Allow multiple issue references per PR
+    allow_multiple_issues: true
+    
+    # Minimum number of issue references required
+    min_issue_refs: 1
+    
+    # Issue reference pattern (regex)
+    issue_pattern: '#\d+'
+  
+  # Branch Balance Rules
+  branch_balance:
+    # Maximum allowed difference in PR count between branches for same issue
+    # Example: If master has 3 PRs and release has 1 PR, imbalance = 2
+    max_imbalance: 2
+    
+    # Warn on imbalance (true) or block (false)
+    warn_only: false
+    
+    # Require at least one PR in each monitored branch
+    require_coverage: true
+  
+  # PR State Handling
+  pr_states:
+    # Include draft PRs in validation
+    include_drafts: false
+    
+    # Consider closed PRs in validation
+    include_closed: false
+    
+    # Consider merged PRs as valid matches
+    include_merged: true
+    
+    # Revalidate when PR state changes
+    revalidate_on_state_change: true
+  
+  # Cross-PR Synchronization
+  synchronization:
+    # Update all related PRs when one changes
+    sync_related_prs: true
+    
+    # Maximum number of PRs to update in one run
+    max_sync_prs: 50
+    
+    # Delay between PR updates (seconds)
+    update_delay: 1
+  
+  # Validation Strictness
+  strictness:
+    # Validation mode: "strict", "moderate", "lenient"
+    # strict: All rules must pass
+    # moderate: Some rules can be warnings
+    # lenient: Most rules are warnings only
+    mode: "strict"
+    
+    # Fail on warnings
+    fail_on_warnings: false
+
+# Override Configuration
+overrides:
+  # Label that allows bypassing validation
+  label: "approved:single-branch-merge"
+  
+  # Require justification comment when override is used
+  require_justification: true
+  
+  # Minimum comment length for justification
+  min_justification_length: 50
+  
+  # Users/teams allowed to approve overrides
+  # Empty list means any reviewer can approve
+  allowed_approvers: []
+  # Example:
+  # allowed_approvers:
+  #   - "senior-dev-team"
+  #   - "release-manager"
+  
+  # Audit override usage
+  audit_overrides: true
+  
+  # Notify on override usage
+  notify_on_override:
+    enabled: true
+    channels:
+      - type: "comment"
+        target: "pr"
+      # - type: "slack"
+      #   webhook_url: "${SLACK_WEBHOOK_URL}"
+
+# Labels Configuration
+labels:
+  # Label added when validation fails
+  blocked:
+    name: "merge-blocked:cross-branch-validation"
+    color: "d73a4a"
+    description: "PR blocked due to missing cross-branch validation"
+  
+  # Label added when validation passes
+  validated:
+    name: "cross-branch-validated"
+    color: "0e8a16"
+    description: "PR has matching cross-branch PR"
+  
+  # Label for imbalance warnings
+  warning:
+    name: "cross-branch-warning"
+    color: "fbca04"
+    description: "Branch imbalance detected"
+  
+  # Label for override approval
+  override:
+    name: "approved:single-branch-merge"
+    color: "fbca04"
+    description: "Approved for single-branch merge"
+
+# Notification Configuration
+notifications:
+  # Post validation status as PR comment
+  comment_on_pr: true
+  
+  # Update comment instead of creating new ones
+  update_existing_comment: true
+  
+  # Comment template marker (used to find existing comments)
+  comment_marker: "Cross-Branch Validation Status"
+  
+  # Include detailed information in comments
+  include_details:
+    pr_list: true
+    issue_refs: true
+    validation_rules: true
+    override_instructions: true
+    timestamp: true
+  
+  # Status check configuration
+  status_checks:
+    enabled: true
+    context: "cross-branch-validation"
+    # Status descriptions
+    descriptions:
+      success: "Cross-branch validation passed"
+      failure: "Cross-branch validation failed"
+      pending: "Cross-branch validation in progress"
+
+# Performance Configuration
+performance:
+  # Cache validation results (in minutes)
+  cache_duration: 5
+  
+  # Maximum API calls per workflow run
+  max_api_calls: 100
+  
+  # Batch size for PR queries
+  batch_size: 10
+  
+  # Timeout for validation (in seconds)
+  timeout: 300
+  
+  # Retry configuration
+  retry:
+    enabled: true
+    max_attempts: 3
+    backoff_multiplier: 2
+
+# Monitoring and Logging
+monitoring:
+  # Log level: "debug", "info", "warn", "error"
+  log_level: "info"
+  
+  # Collect metrics
+  collect_metrics: true
+  
+  # Metrics to track
+  metrics:
+    - validation_duration
+    - api_calls_count
+    - pr_update_count
+    - validation_result
+    - override_usage
+  
+  # Export metrics (optional)
+  # export_to:
+  #   - type: "github_actions"
+  #   - type: "datadog"
+  #     api_key: "${DATADOG_API_KEY}"
+
+# Scheduled Reconciliation
+reconciliation:
+  # Enable scheduled reconciliation to catch missed events
+  enabled: true
+  
+  # Cron schedule (runs daily at 2 AM UTC)
+  schedule: "0 2 * * *"
+  
+  # Revalidate PRs older than (in hours)
+  revalidate_after: 24
+  
+  # Maximum PRs to reconcile per run
+  max_prs: 100
+
+# Advanced Features
+advanced:
+  # Multi-issue validation strategy
+  # "all": All issues must have matching PRs
+  # "any": At least one issue must have matching PR
+  # "majority": More than 50% of issues must have matching PRs
+  multi_issue_strategy: "all"
+  
+  # Handle PR dependencies
+  check_dependencies: false
+  
+  # Validate commit messages
+  validate_commit_messages: false
+  
+  # Custom validation scripts
+  custom_validators: []
+  # Example:
+  # custom_validators:
+  #   - name: "check-changelog"
+  #     script: ".github/scripts/check-changelog.sh"
+  #     required: false
+
+# Exemptions
+exemptions:
+  # PRs from these branches are exempt from validation
+  exempt_branches:
+    - "dependabot/**"
+    - "renovate/**"
+  
+  # PRs with these labels are exempt
+  exempt_labels:
+    - "skip-validation"
+    - "emergency-fix"
+  
+  # PRs from these authors are exempt
+  exempt_authors: []
+  # Example:
+  # exempt_authors:
+  #   - "dependabot[bot]"
+  #   - "renovate[bot]"
+  
+  # File patterns that trigger exemption
+  exempt_file_patterns:
+    - "docs/**"
+    - "*.md"
+    - ".github/workflows/**"
+
+# Experimental Features
+experimental:
+  # Use AI to suggest matching PRs
+  ai_suggestions: false
+  
+  # Automatic PR creation for missing branches
+  auto_create_prs: false
+  
+  # Predictive validation (validate before PR is opened)
+  predictive_validation: false
+
+# Migration Settings
+migration:
+  # Gradual rollout percentage (0-100)
+  rollout_percentage: 100
+  
+  # Dry run mode (validate but don't block)
+  dry_run: false
+  
+  # Compatibility with old workflow
+  legacy_mode: false
+
+# Made with Bob
