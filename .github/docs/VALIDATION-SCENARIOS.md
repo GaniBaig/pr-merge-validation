@@ -266,18 +266,21 @@ Result: FAIL_MISSING - No coverage in release branch
 
 ## State Synchronization Scenarios
 
-### Scenario 4.1: Real-Time Cross-PR Update
+### Scenario 4.1: Real-Time Cross-PR Update with Pending State
 
 **Timeline:**
-1. **T0:** PR #300 → `master`, references `#54321` (BLOCKED)
+1. **T0:** PR #300 → `master`, references `#54321` (BLOCKED - no matching PR)
 2. **T1:** PR #301 → `release-5.3.1`, references `#54321` (created)
 3. **T2:** Workflow triggers on PR #301
-4. **T3:** System finds PR #300 with same issue
-5. **T4:** Both PR #300 and PR #301 updated simultaneously
+4. **T3:** System detects PR #300 validation is still running
+5. **T4:** PR #301 shows PENDING status (waiting for PR #300 to complete)
+6. **T5:** PR #300 validation completes
+7. **T6:** Both PRs automatically updated to PASS status
 
 **Expected Behavior:**
-- ✅ PR #300 automatically unblocked
-- ✅ PR #301 passes validation
+- ⏳ PR #301 shows PENDING status initially (waiting for PR #300 check)
+- ✅ PR #300 automatically unblocked once its validation completes
+- ✅ Both PRs automatically updated to PASS when both validations complete
 - Both PRs show synchronized status
 - No manual re-run needed
 
@@ -285,11 +288,39 @@ Result: FAIL_MISSING - No coverage in release branch
 ```
 Event: PR #301 opened
 Action: Query all PRs with #54321
-Found: PR #300 (master), PR #301 (release)
-Update: Both PRs → PASS status
+Found: PR #300 (master, validation in progress), PR #301 (release)
+Status: PR #301 → PENDING (waiting for PR #300)
+Later: PR #300 completes → Both PRs → PASS status
 ```
 
-**Key Feature:** Eliminates stale validation problem
+**Key Feature:** Eliminates stale validation problem and prevents premature failures
+
+---
+
+### Scenario 4.1b: Real-Time Cross-PR Update (Both Checks Complete)
+
+**Timeline:**
+1. **T0:** PR #300 → `master`, references `#54321` (validation complete, BLOCKED)
+2. **T1:** PR #301 → `release-5.3.1`, references `#54321` (created)
+3. **T2:** Workflow triggers on PR #301
+4. **T3:** System finds PR #300 with same issue (validation already complete)
+5. **T4:** Both PR #300 and PR #301 updated simultaneously to PASS
+
+**Expected Behavior:**
+- ✅ PR #300 automatically unblocked
+- ✅ PR #301 passes validation immediately
+- Both PRs show synchronized status
+- No manual re-run needed
+
+**Validation Logic:**
+```
+Event: PR #301 opened
+Action: Query all PRs with #54321
+Found: PR #300 (master, validation complete), PR #301 (release)
+Update: Both PRs → PASS status immediately
+```
+
+**Key Feature:** Instant synchronization when all checks are complete
 
 ---
 
@@ -657,6 +688,7 @@ Efficiency gain: 50-100x faster
 |----------|--------|----------|----------|------|
 | Perfect Match | PASS | No | N/A | Yes |
 | Missing PR | FAIL_MISSING | Yes | Allowed | Yes |
+| Pending Validation | PENDING | No | N/A | Yes |
 | Exact Match | PASS | No | N/A | Yes |
 | Partial Match | FAIL_MISMATCH | Yes | Allowed | Yes |
 | Superset Match | PASS | No | N/A | Yes |
@@ -679,6 +711,8 @@ Use this checklist to verify your validation system:
 - [ ] Multi-issue superset matching works
 - [ ] Branch imbalance detection works
 - [ ] Real-time cross-PR synchronization works
+- [ ] Pending state detection works (Scenario 2)
+- [ ] Automatic update after pending check completes
 - [ ] Draft PR handling works correctly
 - [ ] Merged PR handling works correctly
 - [ ] Override mechanism works

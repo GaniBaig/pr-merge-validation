@@ -296,6 +296,49 @@ jobs:
             
             return hasOverride;
 
+      - name: Check for pending validation in comparison branch
+        id: check_pending
+        if: steps.query_linked_prs.outputs.total_prs > 0
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const primaryPRs = '${{ steps.query_linked_prs.outputs.primary_prs }}'.split(',').filter(n => n);
+            const releasePRs = '${{ steps.query_linked_prs.outputs.release_prs }}'.split(',').filter(n => n);
+            const currentPR = context.payload.pull_request?.number;
+            const currentBranch = context.payload.pull_request?.base?.ref;
+            
+            // Determine comparison PRs based on current branch
+            const comparisonPRs = currentBranch === '${{ env.PRIMARY_BRANCH }}' ? releasePRs : primaryPRs;
+            
+            let hasPendingChecks = false;
+            let pendingPRNumbers = [];
+            
+            // Check if comparison PRs have pending validation checks
+            for (const prNum of comparisonPRs) {
+              try {
+                const { data: checkRuns } = await github.rest.checks.listForRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `refs/pull/${prNum}/head`,
+                  check_name: 'validate-cross-branch'
+                });
+                
+                const latestCheck = checkRuns.check_runs[0];
+                if (!latestCheck || latestCheck.status === 'queued' || latestCheck.status === 'in_progress') {
+                  hasPendingChecks = true;
+                  pendingPRNumbers.push(prNum);
+                  console.log(`PR #${prNum} has pending validation check`);
+                }
+              } catch (error) {
+                console.log(`Could not check status for PR #${prNum}: ${error.message}`);
+              }
+            }
+            
+            core.setOutput('has_pending', hasPendingChecks.toString());
+            core.setOutput('pending_prs', pendingPRNumbers.join(','));
+            
+            return { hasPendingChecks, pendingPRNumbers };
+
       - name: Determine validation result
         id: validation_result
         if: steps.extract_issues.outputs.has_issues == 'true'
@@ -305,8 +348,10 @@ jobs:
           IMBALANCE_EXCEEDED="${{ steps.check_imbalance.outputs.imbalance_exceeded }}"
           PRIMARY_COUNT=${{ steps.query_linked_prs.outputs.primary_count }}
           RELEASE_COUNT=${{ steps.query_linked_prs.outputs.release_count }}
+          HAS_PENDING="${{ steps.check_pending.outputs.has_pending }}"
+          PENDING_PRS="${{ steps.check_pending.outputs.pending_prs }}"
           
-          # Validation logic
+          # Validation logic with pending check handling
           if [ "$OVERRIDE" = "true" ]; then
             RESULT="PASS_OVERRIDE"
             MESSAGE="✅ Validation PASSED (Override approved)"
@@ -321,6 +366,11 @@ jobs:
               MESSAGE="✅ Validation PASSED: Matching PRs found in both branches"
               SHOULD_BLOCK="false"
             fi
+          elif [ "$HAS_PENDING" = "true" ]; then
+            # NEW: Handle pending checks in comparison branch
+            RESULT="PENDING"
+            MESSAGE="⏳ Validation PENDING: Waiting for validation to complete in comparison branch (PR(s) #${PENDING_PRS})"
+            SHOULD_BLOCK="false"
           elif [ $PRIMARY_COUNT -eq 0 ] || [ $RELEASE_COUNT -eq 0 ]; then
             RESULT="FAIL_MISSING"
             MESSAGE="❌ Validation FAILED: No matching PR found in comparison branch"
@@ -368,7 +418,19 @@ jobs:
             
             `;
             
-            if (matchingPRs) {
+            if (validationResult === 'PENDING') {
+              const pendingPRs = '${{ steps.check_pending.outputs.pending_prs }}';
+              commentBody += `### ⏳ Validation Pending
+            
+            This PR is waiting for validation checks to complete in the comparison branch.
+            
+            **Pending PRs:** #${pendingPRs}
+            
+            Once the validation completes in the comparison branch, this PR will be automatically updated.
+            **No manual action required** - the system will sync automatically.
+            
+            `;
+            } else if (matchingPRs) {
               commentBody += `### ✅ Matching PRs Found
             - PR(s) #${matchingPRs} in comparison branch contain the same issue references
             
@@ -457,10 +519,18 @@ jobs:
               validationResult: validationResult
             };
 
+      - name: Set pending status for waiting PRs
+        if: steps.validation_result.outputs.result == 'PENDING'
+        run: |
+          echo "::notice::Validation is pending - waiting for checks in comparison branch to complete"
+          echo "::notice::This PR will be automatically updated once comparison branch validation completes"
+          echo "Pending PRs: ${{ steps.check_pending.outputs.pending_prs }}"
+
       - name: Block merge if validation fails
         if: |
           steps.validation_result.outputs.should_block == 'true' &&
-          steps.check_override.outputs.override_approved != 'true'
+          steps.check_override.outputs.override_approved != 'true' &&
+          steps.validation_result.outputs.result != 'PENDING'
         run: |
           echo "::error::Cross-branch validation failed. See PR comments for details."
           echo "::error::Add label '${{ env.OVERRIDE_LABEL }}' to override this check."
