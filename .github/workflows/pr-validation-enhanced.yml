@@ -519,29 +519,27 @@ jobs:
               validationResult: validationResult
             };
 
-      - name: Trigger validation on related PRs
+      - name: Trigger validation on related PRs and wait for completion
         id: trigger_related
         if: |
           steps.query_linked_prs.outputs.total_prs > 0 &&
-          (steps.validation_result.outputs.result == 'PASS' ||
-           steps.validation_result.outputs.result == 'PASS_OVERRIDE')
+          steps.check_pending.outputs.has_pending == 'true'
         uses: actions/github-script@v7
         with:
           script: |
-            const primaryPRs = '${{ steps.query_linked_prs.outputs.primary_prs }}'.split(',').filter(n => n);
-            const releasePRs = '${{ steps.query_linked_prs.outputs.release_prs }}'.split(',').filter(n => n);
+            const pendingPRs = '${{ steps.check_pending.outputs.pending_prs }}'.split(',').filter(n => n);
             const currentPR = context.payload.pull_request?.number;
-            const allPRs = [...primaryPRs, ...releasePRs];
-            
-            // Trigger workflow_dispatch on related PRs (excluding current PR)
-            const relatedPRs = allPRs.filter(pr => pr != currentPR);
             
             console.log(`Current PR: ${currentPR}`);
-            console.log(`Related PRs to trigger: ${relatedPRs.join(', ')}`);
+            console.log(`Pending PRs to trigger: ${pendingPRs.join(', ')}`);
             
-            for (const prNumber of relatedPRs) {
+            const triggeredWorkflows = [];
+            
+            // Trigger workflow_dispatch on pending PRs
+            for (const prNumber of pendingPRs) {
               try {
-                // Trigger workflow_dispatch for this PR
+                console.log(`Triggering validation for PR #${prNumber}...`);
+                
                 await github.rest.actions.createWorkflowDispatch({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -552,14 +550,64 @@ jobs:
                   }
                 });
                 
+                triggeredWorkflows.push(prNumber);
                 console.log(`✅ Triggered validation for PR #${prNumber}`);
               } catch (error) {
                 console.log(`⚠️ Could not trigger validation for PR #${prNumber}: ${error.message}`);
               }
             }
             
+            // Wait for triggered workflows to complete
+            if (triggeredWorkflows.length > 0) {
+              console.log(`Waiting for ${triggeredWorkflows.length} workflow(s) to complete...`);
+              
+              const maxWaitTime = 300000; // 5 minutes
+              const pollInterval = 10000; // 10 seconds
+              const startTime = Date.now();
+              
+              for (const prNumber of triggeredWorkflows) {
+                let completed = false;
+                
+                while (!completed && (Date.now() - startTime) < maxWaitTime) {
+                  await new Promise(resolve => setTimeout(resolve, pollInterval));
+                  
+                  try {
+                    // Check workflow runs for this PR
+                    const { data: runs } = await github.rest.actions.listWorkflowRuns({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      workflow_id: 'pr-validation-enhanced.yml',
+                      event: 'workflow_dispatch',
+                      per_page: 5
+                    });
+                    
+                    // Find the most recent run that matches our PR
+                    const recentRun = runs.workflow_runs.find(run => {
+                      return run.created_at > new Date(startTime).toISOString();
+                    });
+                    
+                    if (recentRun) {
+                      console.log(`PR #${prNumber} workflow status: ${recentRun.status} (${recentRun.conclusion})`);
+                      
+                      if (recentRun.status === 'completed') {
+                        completed = true;
+                        console.log(`✅ PR #${prNumber} validation completed with conclusion: ${recentRun.conclusion}`);
+                      }
+                    }
+                  } catch (error) {
+                    console.log(`Error checking workflow status for PR #${prNumber}: ${error.message}`);
+                  }
+                }
+                
+                if (!completed) {
+                  console.log(`⚠️ Timeout waiting for PR #${prNumber} validation to complete`);
+                }
+              }
+            }
+            
             return {
-              triggeredPRs: relatedPRs.length
+              triggeredPRs: triggeredWorkflows.length,
+              pendingPRs: pendingPRs
             };
 
       - name: Set pending status for waiting PRs
