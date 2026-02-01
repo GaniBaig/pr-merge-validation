@@ -90,15 +90,18 @@ jobs:
           
           echo "Querying issues: $ISSUE_NUMBERS"
           
-          # Convert comma-separated to array for GraphQL
-          ISSUE_ARRAY=$(echo "$ISSUE_NUMBERS" | tr ',' '\n' | sed 's/#//g' | jq -R . | jq -s .)
+          # Initialize empty file for all PRs
+          echo "[]" > all_linked_prs.json
           
-          # GraphQL query to get all PRs linked to these issues
-          QUERY=$(cat <<'EOF'
-          query($owner: String!, $repo: String!, $issueNumbers: [Int!]!) {
-            repository(owner: $owner, name: $repo) {
-              issues(first: 10, filterBy: {numbers: $issueNumbers}) {
-                nodes {
+          # Query each issue individually using GraphQL
+          for ISSUE_REF in $(echo "$ISSUE_NUMBERS" | tr ',' ' '); do
+            ISSUE_NUM=$(echo "$ISSUE_REF" | sed 's/#//g')
+            echo "Querying issue #$ISSUE_NUM..."
+            
+            # GraphQL query for single issue
+            QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
                   number
                   title
                   timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
@@ -128,23 +131,28 @@ jobs:
                   }
                 }
               }
-            }
-          }
-          EOF
-          )
+            }'
+            
+            # Execute GraphQL query for this issue
+            RESULT=$(gh api graphql \
+              -f query="$QUERY" \
+              -f owner="${{ github.repository_owner }}" \
+              -f repo="${{ github.event.repository.name }}" \
+              -F issueNumber="$ISSUE_NUM" 2>&1)
+            
+            if [ $? -eq 0 ]; then
+              # Extract PRs from this issue and append to all_linked_prs.json
+              echo "$RESULT" | jq -r '.data.repository.issue.timelineItems.nodes[].source | select(. != null)' >> all_linked_prs_temp.json
+            else
+              echo "⚠️ Failed to query issue #$ISSUE_NUM: $RESULT"
+            fi
+          done
           
-          # Execute GraphQL query
-          RESULT=$(gh api graphql \
-            -f query="$QUERY" \
-            -f owner="${{ github.repository_owner }}" \
-            -f repo="${{ github.event.repository.name }}" \
-            -f issueNumbers="$ISSUE_ARRAY")
-          
-          echo "$RESULT" > graphql_result.json
-          
-          # Parse and extract PR information
-          jq -r '.data.repository.issues.nodes[].timelineItems.nodes[].source | select(. != null)' \
-            graphql_result.json > all_linked_prs.json
+          # Combine all PRs and remove duplicates
+          if [ -f all_linked_prs_temp.json ]; then
+            jq -s 'flatten | unique_by(.number)' all_linked_prs_temp.json > all_linked_prs.json
+            rm all_linked_prs_temp.json
+          fi
           
           # Count PRs by branch (excluding drafts if configured)
           if [ "${{ env.ALLOW_DRAFT_PRS }}" = "false" ]; then
@@ -154,11 +162,11 @@ jobs:
           fi
           
           PRIMARY_PRS=$(jq -r --arg branch "${{ env.PRIMARY_BRANCH }}" \
-            'select(.baseRefName == $branch and .state == "OPEN") | '"$FILTER_DRAFT"' | .number' \
+            '.[] | select(.baseRefName == $branch and .state == "OPEN") | '"$FILTER_DRAFT"' | .number' \
             all_linked_prs.json | sort -u)
           
           RELEASE_PRS=$(jq -r --arg branch "${{ env.RELEASE_BRANCH }}" \
-            'select(.baseRefName == $branch and .state == "OPEN") | '"$FILTER_DRAFT"' | .number' \
+            '.[] | select(.baseRefName == $branch and .state == "OPEN") | '"$FILTER_DRAFT"' | .number' \
             all_linked_prs.json | sort -u)
           
           PRIMARY_COUNT=$(echo "$PRIMARY_PRS" | grep -c . || echo "0")
@@ -203,7 +211,7 @@ jobs:
           for PR_NUM in $(echo $COMPARE_PRS | tr ',' ' '); do
             # Get PR details from our cached data
             PR_DATA=$(jq -r --arg num "$PR_NUM" \
-              'select(.number == ($num | tonumber))' all_linked_prs.json)
+              '.[] | select(.number == ($num | tonumber))' all_linked_prs.json | head -1)
             
             PR_TEXT=$(echo "$PR_DATA" | jq -r '.title + " " + .body')
             PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '#\d+' | sort -u | tr '\n' ',' | sed 's/,$//')
