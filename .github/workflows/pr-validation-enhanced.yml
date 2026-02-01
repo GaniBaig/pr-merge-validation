@@ -207,7 +207,7 @@ jobs:
           head -c 100 all_linked_prs.json
           echo ""
           echo "=== Last 100 characters ==="
-          tail -c 100 all_linked_prs.json
+          tail all_linked_prs.json
           echo ""
           echo "=== Validating JSON ==="
           if jq . all_linked_prs.json > /dev/null 2>&1; then
