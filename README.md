@@ -1,4 +1,4 @@
-# pr-merge-validation
+# pr-merge-validations
 
 
 ---
