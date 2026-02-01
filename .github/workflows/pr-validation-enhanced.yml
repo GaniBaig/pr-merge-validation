@@ -14,7 +14,7 @@ on:
 
 # Configuration: Update these for each release cycle
 env:
-  PRIMARY_BRANCH: 'main'
+  PRIMARY_BRANCH: 'master'
   RELEASE_BRANCH: 'release-5.3.1'
   # Validation rules
   REQUIRE_EXACT_MATCH: 'true'           # All issue refs must match exactly
@@ -90,18 +90,15 @@ jobs:
           
           echo "Querying issues: $ISSUE_NUMBERS"
           
-          # Initialize empty array for all PRs
-          > all_linked_prs_temp.json
+          # Convert comma-separated to array for GraphQL
+          ISSUE_ARRAY=$(echo "$ISSUE_NUMBERS" | tr ',' '\n' | sed 's/#//g' | jq -R . | jq -s .)
           
-          # Query each issue individually using GraphQL
-          for ISSUE_REF in $(echo "$ISSUE_NUMBERS" | tr ',' ' '); do
-            ISSUE_NUM=$(echo "$ISSUE_REF" | sed 's/#//g')
-            echo "Querying issue #$ISSUE_NUM..."
-            
-            # GraphQL query for single issue
-            QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
-              repository(owner: $owner, name: $repo) {
-                issue(number: $issueNumber) {
+          # GraphQL query to get all PRs linked to these issues
+          QUERY=$(cat <<'EOF'
+          query($owner: String!, $repo: String!, $issueNumbers: [Int!]!) {
+            repository(owner: $owner, name: $repo) {
+              issues(first: 10, filterBy: {numbers: $issueNumbers}) {
+                nodes {
                   number
                   title
                   timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
@@ -131,64 +128,44 @@ jobs:
                   }
                 }
               }
-            }'
-            
-            # Execute GraphQL query for this issue
-            RESULT=$(gh api graphql \
-              -f query="$QUERY" \
-              -f owner="${{ github.repository_owner }}" \
-              -f repo="${{ github.event.repository.name }}" \
-              -F issueNumber="$ISSUE_NUM" 2>&1)
-            
-            if [ $? -eq 0 ]; then
-              # Extract PRs from this issue and append
-              echo "$RESULT" | jq -c '.data.repository.issue.timelineItems.nodes[].source | select(. != null)' >> all_linked_prs_temp.json
-            else
-              echo "⚠️ Failed to query issue #$ISSUE_NUM: $RESULT"
-            fi
-          done
+            }
+          }
+          EOF
+          )
           
-          # Combine all PRs and remove duplicates
-          if [ -s all_linked_prs_temp.json ]; then
-            jq -s 'unique_by(.number)' all_linked_prs_temp.json > all_linked_prs.json
-          else
-            echo "[]" > all_linked_prs.json
-          fi
-          rm -f all_linked_prs_temp.json
+          # Execute GraphQL query
+          RESULT=$(gh api graphql \
+            -f query="$QUERY" \
+            -f owner="${{ github.repository_owner }}" \
+            -f repo="${{ github.event.repository.name }}" \
+            -f issueNumbers="$ISSUE_ARRAY")
+          
+          echo "$RESULT" > graphql_result.json
+          
+          # Parse and extract PR information
+          jq -r '.data.repository.issues.nodes[].timelineItems.nodes[].source | select(. != null)' \
+            graphql_result.json > all_linked_prs.json
           
           # Count PRs by branch (excluding drafts if configured)
           if [ "${{ env.ALLOW_DRAFT_PRS }}" = "false" ]; then
-            FILTER_DRAFT='and .isDraft == false'
+            FILTER_DRAFT='select(.isDraft == false)'
           else
-            FILTER_DRAFT=''
+            FILTER_DRAFT='.'
           fi
           
           PRIMARY_PRS=$(jq -r --arg branch "${{ env.PRIMARY_BRANCH }}" \
-            '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
-            all_linked_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
+            'select(.baseRefName == $branch and .state == "OPEN") | '"$FILTER_DRAFT"' | .number' \
+            all_linked_prs.json | sort -u)
           
           RELEASE_PRS=$(jq -r --arg branch "${{ env.RELEASE_BRANCH }}" \
-            '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
-            all_linked_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
+            'select(.baseRefName == $branch and .state == "OPEN") | '"$FILTER_DRAFT"' | .number' \
+            all_linked_prs.json | sort -u)
           
-          # Count PRs safely
-          if [ -z "$PRIMARY_PRS" ] || [ "$PRIMARY_PRS" = " " ]; then
-            PRIMARY_COUNT=0
-            PRIMARY_PRS=""
-          else
-            PRIMARY_COUNT=$(echo "$PRIMARY_PRS" | wc -w)
-          fi
+          PRIMARY_COUNT=$(echo "$PRIMARY_PRS" | grep -c . || echo "0")
+          RELEASE_COUNT=$(echo "$RELEASE_PRS" | grep -c . || echo "0")
           
-          if [ -z "$RELEASE_PRS" ] || [ "$RELEASE_PRS" = " " ]; then
-            RELEASE_COUNT=0
-            RELEASE_PRS=""
-          else
-            RELEASE_COUNT=$(echo "$RELEASE_PRS" | wc -w)
-          fi
-          
-          # Output results
-          echo "primary_prs=$(echo $PRIMARY_PRS | tr ' ' ','  | sed 's/,$//' | sed 's/^,//')" >> $GITHUB_OUTPUT
-          echo "release_prs=$(echo $RELEASE_PRS | tr ' ' ',' | sed 's/,$//' | sed 's/^,//')" >> $GITHUB_OUTPUT
+          echo "primary_prs=$(echo $PRIMARY_PRS | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
+          echo "release_prs=$(echo $RELEASE_PRS | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
           echo "primary_count=$PRIMARY_COUNT" >> $GITHUB_OUTPUT
           echo "release_count=$RELEASE_COUNT" >> $GITHUB_OUTPUT
           echo "total_prs=$((PRIMARY_COUNT + RELEASE_COUNT))" >> $GITHUB_OUTPUT
@@ -202,18 +179,6 @@ jobs:
         if: steps.query_linked_prs.outputs.total_prs > 0
         run: |
           CURRENT_ISSUES="${{ steps.extract_issues.outputs.issue_refs }}"
-          
-          # Verify all_linked_prs.json exists and is valid
-          if [ ! -f all_linked_prs.json ]; then
-            echo "⚠️ all_linked_prs.json not found, creating empty array"
-            echo "[]" > all_linked_prs.json
-          fi
-          
-          # Validate JSON file
-          if ! jq empty all_linked_prs.json 2>/dev/null; then
-            echo "⚠️ all_linked_prs.json is invalid, creating empty array"
-            echo "[]" > all_linked_prs.json
-          fi
           
           # For each PR in comparison branch, check if it has ALL the same issue refs
           PRIMARY_PRS="${{ steps.query_linked_prs.outputs.primary_prs }}"
@@ -234,51 +199,36 @@ jobs:
           EXACT_MATCH_FOUND=false
           MATCHING_PR_NUMBERS=""
           
-          # Check if there are PRs to compare
-          if [ -z "$COMPARE_PRS" ]; then
-            echo "No PRs to compare in branch $COMPARE_BRANCH"
-          else
-            # Check each PR in comparison branch
-            for PR_NUM in $(echo $COMPARE_PRS | tr ',' ' '); do
-              # Skip empty PR numbers
-              if [ -z "$PR_NUM" ]; then
-                continue
+          # Check each PR in comparison branch
+          for PR_NUM in $(echo $COMPARE_PRS | tr ',' ' '); do
+            # Get PR details from our cached data
+            PR_DATA=$(jq -r --arg num "$PR_NUM" \
+              'select(.number == ($num | tonumber))' all_linked_prs.json)
+            
+            PR_TEXT=$(echo "$PR_DATA" | jq -r '.title + " " + .body')
+            PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '#\d+' | sort -u | tr '\n' ',' | sed 's/,$//')
+            
+            echo "PR #$PR_NUM has issues: $PR_ISSUES"
+            
+            # Check if this PR has ALL the same issues
+            if [ "${{ env.REQUIRE_EXACT_MATCH }}" = "true" ]; then
+              if [ "$PR_ISSUES" = "$CURRENT_ISSUES" ]; then
+                EXACT_MATCH_FOUND=true
+                MATCHING_PR_NUMBERS="$MATCHING_PR_NUMBERS,$PR_NUM"
+                echo "✅ Exact match found in PR #$PR_NUM"
               fi
-              
-              # Get PR details from our cached data
-              PR_DATA=$(jq -r --arg num "$PR_NUM" \
-                '.[] | select(.number == ($num | tonumber))' all_linked_prs.json 2>/dev/null | head -1)
-              
-              if [ -z "$PR_DATA" ] || [ "$PR_DATA" = "null" ]; then
-                echo "⚠️ No data found for PR #$PR_NUM in cache"
-                continue
-              fi
-              
-              PR_TEXT=$(echo "$PR_DATA" | jq -r '.title + " " + .body' 2>/dev/null)
-              PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '#\d+' | sort -u | tr '\n' ',' | sed 's/,$//')
-              
-              echo "PR #$PR_NUM has issues: $PR_ISSUES"
-              
-              # Check if this PR has ALL the same issues
-              if [ "${{ env.REQUIRE_EXACT_MATCH }}" = "true" ]; then
-                if [ "$PR_ISSUES" = "$CURRENT_ISSUES" ]; then
+            else
+              # Check if PR has at least one matching issue
+              for ISSUE in $(echo $CURRENT_ISSUES | tr ',' ' '); do
+                if echo "$PR_ISSUES" | grep -q "$ISSUE"; then
                   EXACT_MATCH_FOUND=true
                   MATCHING_PR_NUMBERS="$MATCHING_PR_NUMBERS,$PR_NUM"
-                  echo "✅ Exact match found in PR #$PR_NUM"
+                  echo "✅ Partial match found in PR #$PR_NUM"
+                  break
                 fi
-              else
-                # Check if PR has at least one matching issue
-                for ISSUE in $(echo $CURRENT_ISSUES | tr ',' ' '); do
-                  if echo "$PR_ISSUES" | grep -q "$ISSUE"; then
-                    EXACT_MATCH_FOUND=true
-                    MATCHING_PR_NUMBERS="$MATCHING_PR_NUMBERS,$PR_NUM"
-                    echo "✅ Partial match found in PR #$PR_NUM"
-                    break
-                  fi
-                done
-              fi
-            done
-          fi
+              done
+            fi
+          done
           
           MATCHING_PR_NUMBERS=$(echo "$MATCHING_PR_NUMBERS" | sed 's/^,//')
           
@@ -323,49 +273,6 @@ jobs:
             
             return hasOverride;
 
-      - name: Check for pending validation in comparison branch
-        id: check_pending
-        if: steps.query_linked_prs.outputs.total_prs > 0
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const primaryPRs = '${{ steps.query_linked_prs.outputs.primary_prs }}'.split(',').filter(n => n);
-            const releasePRs = '${{ steps.query_linked_prs.outputs.release_prs }}'.split(',').filter(n => n);
-            const currentPR = context.payload.pull_request?.number;
-            const currentBranch = context.payload.pull_request?.base?.ref;
-            
-            // Determine comparison PRs based on current branch
-            const comparisonPRs = currentBranch === '${{ env.PRIMARY_BRANCH }}' ? releasePRs : primaryPRs;
-            
-            let hasPendingChecks = false;
-            let pendingPRNumbers = [];
-            
-            // Check if comparison PRs have pending validation checks
-            for (const prNum of comparisonPRs) {
-              try {
-                const { data: checkRuns } = await github.rest.checks.listForRef({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  ref: `refs/pull/${prNum}/head`,
-                  check_name: 'validate-cross-branch'
-                });
-                
-                const latestCheck = checkRuns.check_runs[0];
-                if (!latestCheck || latestCheck.status === 'queued' || latestCheck.status === 'in_progress') {
-                  hasPendingChecks = true;
-                  pendingPRNumbers.push(prNum);
-                  console.log(`PR #${prNum} has pending validation check`);
-                }
-              } catch (error) {
-                console.log(`Could not check status for PR #${prNum}: ${error.message}`);
-              }
-            }
-            
-            core.setOutput('has_pending', hasPendingChecks.toString());
-            core.setOutput('pending_prs', pendingPRNumbers.join(','));
-            
-            return { hasPendingChecks, pendingPRNumbers };
-
       - name: Determine validation result
         id: validation_result
         if: steps.extract_issues.outputs.has_issues == 'true'
@@ -375,10 +282,8 @@ jobs:
           IMBALANCE_EXCEEDED="${{ steps.check_imbalance.outputs.imbalance_exceeded }}"
           PRIMARY_COUNT=${{ steps.query_linked_prs.outputs.primary_count }}
           RELEASE_COUNT=${{ steps.query_linked_prs.outputs.release_count }}
-          HAS_PENDING="${{ steps.check_pending.outputs.has_pending }}"
-          PENDING_PRS="${{ steps.check_pending.outputs.pending_prs }}"
           
-          # Validation logic with pending check handling
+          # Validation logic
           if [ "$OVERRIDE" = "true" ]; then
             RESULT="PASS_OVERRIDE"
             MESSAGE="✅ Validation PASSED (Override approved)"
@@ -393,11 +298,6 @@ jobs:
               MESSAGE="✅ Validation PASSED: Matching PRs found in both branches"
               SHOULD_BLOCK="false"
             fi
-          elif [ "$HAS_PENDING" = "true" ]; then
-            # NEW: Handle pending checks in comparison branch
-            RESULT="PENDING"
-            MESSAGE="⏳ Validation PENDING: Waiting for validation to complete in comparison branch (PR(s) #${PENDING_PRS})"
-            SHOULD_BLOCK="false"
           elif [ $PRIMARY_COUNT -eq 0 ] || [ $RELEASE_COUNT -eq 0 ]; then
             RESULT="FAIL_MISSING"
             MESSAGE="❌ Validation FAILED: No matching PR found in comparison branch"
@@ -445,19 +345,7 @@ jobs:
             
             `;
             
-            if (validationResult === 'PENDING') {
-              const pendingPRs = '${{ steps.check_pending.outputs.pending_prs }}';
-              commentBody += `### ⏳ Validation Pending
-            
-            This PR is waiting for validation checks to complete in the comparison branch.
-            
-            **Pending PRs:** #${pendingPRs}
-            
-            Once the validation completes in the comparison branch, this PR will be automatically updated.
-            **No manual action required** - the system will sync automatically.
-            
-            `;
-            } else if (matchingPRs) {
+            if (matchingPRs) {
               commentBody += `### ✅ Matching PRs Found
             - PR(s) #${matchingPRs} in comparison branch contain the same issue references
             
@@ -546,109 +434,10 @@ jobs:
               validationResult: validationResult
             };
 
-      - name: Trigger validation on related PRs and wait for completion
-        id: trigger_related
-        if: |
-          steps.query_linked_prs.outputs.total_prs > 0 &&
-          steps.check_pending.outputs.has_pending == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const pendingPRs = '${{ steps.check_pending.outputs.pending_prs }}'.split(',').filter(n => n);
-            const currentPR = context.payload.pull_request?.number;
-            
-            console.log(`Current PR: ${currentPR}`);
-            console.log(`Pending PRs to trigger: ${pendingPRs.join(', ')}`);
-            
-            const triggeredWorkflows = [];
-            
-            // Trigger workflow_dispatch on pending PRs
-            for (const prNumber of pendingPRs) {
-              try {
-                console.log(`Triggering validation for PR #${prNumber}...`);
-                
-                await github.rest.actions.createWorkflowDispatch({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  workflow_id: 'pr-validation-enhanced.yml',
-                  ref: '${{ github.event.repository.default_branch }}',
-                  inputs: {
-                    pr_number: prNumber.toString()
-                  }
-                });
-                
-                triggeredWorkflows.push(prNumber);
-                console.log(`✅ Triggered validation for PR #${prNumber}`);
-              } catch (error) {
-                console.log(`⚠️ Could not trigger validation for PR #${prNumber}: ${error.message}`);
-              }
-            }
-            
-            // Wait for triggered workflows to complete
-            if (triggeredWorkflows.length > 0) {
-              console.log(`Waiting for ${triggeredWorkflows.length} workflow(s) to complete...`);
-              
-              const maxWaitTime = 300000; // 5 minutes
-              const pollInterval = 10000; // 10 seconds
-              const startTime = Date.now();
-              
-              for (const prNumber of triggeredWorkflows) {
-                let completed = false;
-                
-                while (!completed && (Date.now() - startTime) < maxWaitTime) {
-                  await new Promise(resolve => setTimeout(resolve, pollInterval));
-                  
-                  try {
-                    // Check workflow runs for this PR
-                    const { data: runs } = await github.rest.actions.listWorkflowRuns({
-                      owner: context.repo.owner,
-                      repo: context.repo.repo,
-                      workflow_id: 'pr-validation-enhanced.yml',
-                      event: 'workflow_dispatch',
-                      per_page: 5
-                    });
-                    
-                    // Find the most recent run that matches our PR
-                    const recentRun = runs.workflow_runs.find(run => {
-                      return run.created_at > new Date(startTime).toISOString();
-                    });
-                    
-                    if (recentRun) {
-                      console.log(`PR #${prNumber} workflow status: ${recentRun.status} (${recentRun.conclusion})`);
-                      
-                      if (recentRun.status === 'completed') {
-                        completed = true;
-                        console.log(`✅ PR #${prNumber} validation completed with conclusion: ${recentRun.conclusion}`);
-                      }
-                    }
-                  } catch (error) {
-                    console.log(`Error checking workflow status for PR #${prNumber}: ${error.message}`);
-                  }
-                }
-                
-                if (!completed) {
-                  console.log(`⚠️ Timeout waiting for PR #${prNumber} validation to complete`);
-                }
-              }
-            }
-            
-            return {
-              triggeredPRs: triggeredWorkflows.length,
-              pendingPRs: pendingPRs
-            };
-
-      - name: Set pending status for waiting PRs
-        if: steps.validation_result.outputs.result == 'PENDING'
-        run: |
-          echo "::notice::Validation is pending - waiting for checks in comparison branch to complete"
-          echo "::notice::This PR will be automatically updated once comparison branch validation completes"
-          echo "Pending PRs: ${{ steps.check_pending.outputs.pending_prs }}"
-
       - name: Block merge if validation fails
         if: |
           steps.validation_result.outputs.should_block == 'true' &&
-          steps.check_override.outputs.override_approved != 'true' &&
-          steps.validation_result.outputs.result != 'PENDING'
+          steps.check_override.outputs.override_approved != 'true'
         run: |
           echo "::error::Cross-branch validation failed. See PR comments for details."
           echo "::error::Add label '${{ env.OVERRIDE_LABEL }}' to override this check."
