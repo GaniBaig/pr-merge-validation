@@ -196,7 +196,31 @@ jobs:
           echo "📊 PR Distribution:"
           echo "  - ${{ env.PRIMARY_BRANCH }}: $PRIMARY_COUNT PRs"
           echo "  - ${{ env.RELEASE_BRANCH }}: $RELEASE_COUNT PRs"
-
+      - name: Debug - Check JSON file content
+        if: steps.query_linked_prs.outputs.total_prs > 0
+        run: |
+          echo "=== Debugging all_linked_prs.json ==="
+          echo "File size: $(wc -c < all_linked_prs.json) bytes"
+          echo "Line count: $(wc -l < all_linked_prs.json)"
+          echo ""
+          echo "=== First 100 characters ==="
+          head -c 100 all_linked_prs.json
+          echo ""
+          echo "=== Last 100 characters ==="
+          tail -c 100 all_linked_prs.json
+          echo ""
+          echo "=== Validating JSON ==="
+          if jq . all_linked_prs.json > /dev/null 2>&1; then
+            echo "✅ JSON is valid"
+            echo "=== Sample content ==="
+            jq '.[0] | {number: .number, title: .title}' all_linked_prs.json
+          else
+            echo "❌ JSON is invalid. Error:"
+            jq . all_linked_prs.json 2>&1 | head -5
+            echo ""
+            echo "=== Raw content (first 10 lines) ==="
+            head -10 all_linked_prs.json
+          fi
       - name: Validate issue reference matching
         id: validate_matching
         if: steps.query_linked_prs.outputs.total_prs > 0
