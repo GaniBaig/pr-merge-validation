@@ -1,0 +1,643 @@
+name: Enhanced Cross-Branch PR Validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, closed, labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to revalidate (optional - validates all if empty)'
+        required: false
+      issue_number:
+        description: 'Issue number to revalidate all related PRs (optional)'
+        required: false
+
+# Configuration: Update these for each release cycle
+env:
+  PRIMARY_BRANCH: 'main'
+  RELEASE_BRANCH: 'release-5.3.1'
+  # Validation rules
+  REQUIRE_EXACT_MATCH: 'true'           # All issue refs must match exactly
+  ALLOW_DRAFT_PRS: 'false'              # Include draft PRs in validation
+  MAX_BRANCH_IMBALANCE: '2'             # Max difference in PR count between branches
+  OVERRIDE_LABEL: 'approved:single-branch-merge'
+  BLOCK_LABEL: 'merge-blocked:cross-branch-validation'
+
+jobs:
+  validate-cross-branch:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+      contents: read
+      statuses: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup validation context
+        id: context
+        run: |
+          echo "timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_OUTPUT
+          echo "workflow_run_id=${{ github.run_id }}" >> $GITHUB_OUTPUT
+          echo "trigger_event=${{ github.event_name }}" >> $GITHUB_OUTPUT
+          
+          # Determine which PR triggered this (if any)
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "trigger_pr=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.pr_number }}" ]; then
+            echo "trigger_pr=${{ github.event.inputs.pr_number }}" >> $GITHUB_OUTPUT
+          else
+            echo "trigger_pr=none" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract all issue references from current PR
+        id: extract_issues
+        if: github.event_name == 'pull_request'
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_BODY="${{ github.event.pull_request.body }}"
+          PR_TEXT="$PR_TITLE $PR_BODY"
+          
+          # Extract ALL issue references (not just first one)
+          ISSUE_REFS=$(echo "$PR_TEXT" | grep -oP '#\d+' | sort -u | tr '\n' ',' | sed 's/,$//')
+          
+          if [ -z "$ISSUE_REFS" ]; then
+            echo "has_issues=false" >> $GITHUB_OUTPUT
+            echo "⚠️ No issue references found in PR"
+          else
+            echo "has_issues=true" >> $GITHUB_OUTPUT
+            echo "issue_refs=$ISSUE_REFS" >> $GITHUB_OUTPUT
+            echo "issue_count=$(echo $ISSUE_REFS | tr ',' '\n' | wc -l)" >> $GITHUB_OUTPUT
+            echo "✅ Found issue references: $ISSUE_REFS"
+          fi
+
+      - name: Query GitHub GraphQL for all linked PRs
+        id: query_linked_prs
+        if: steps.extract_issues.outputs.has_issues == 'true' || github.event.inputs.issue_number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Determine which issues to query
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.issue_number }}" ]; then
+            ISSUE_NUMBERS="${{ github.event.inputs.issue_number }}"
+          else
+            ISSUE_NUMBERS="${{ steps.extract_issues.outputs.issue_refs }}"
+          fi
+          
+          echo "Querying issues: $ISSUE_NUMBERS"
+          
+          # Initialize empty array for all PRs
+          > all_linked_prs_temp.json
+          
+          # Query each issue individually using GraphQL
+          for ISSUE_REF in $(echo "$ISSUE_NUMBERS" | tr ',' ' '); do
+            ISSUE_NUM=$(echo "$ISSUE_REF" | sed 's/#//g')
+            echo "Querying issue #$ISSUE_NUM..."
+            
+            # GraphQL query for single issue
+            QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
+                  number
+                  title
+                  timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
+                    nodes {
+                      ... on CrossReferencedEvent {
+                        source {
+                          ... on PullRequest {
+                            number
+                            title
+                            body
+                            baseRefName
+                            state
+                            isDraft
+                            url
+                            labels(first: 20) {
+                              nodes {
+                                name
+                              }
+                            }
+                            author {
+                              login
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }'
+            
+            # Execute GraphQL query for this issue
+            RESULT=$(gh api graphql \
+              -f query="$QUERY" \
+              -f owner="${{ github.repository_owner }}" \
+              -f repo="${{ github.event.repository.name }}" \
+              -F issueNumber="$ISSUE_NUM" 2>&1)
+            
+            if [ $? -eq 0 ]; then
+              # Extract PRs from this issue and append
+              echo "$RESULT" | jq -c '.data.repository.issue.timelineItems.nodes[].source | select(. != null)' >> all_linked_prs_temp.json
+            else
+              echo "⚠️ Failed to query issue #$ISSUE_NUM: $RESULT"
+            fi
+          done
+          
+          # Combine all PRs and remove duplicates
+          if [ -s all_linked_prs_temp.json ]; then
+            jq -s 'unique_by(.number)' all_linked_prs_temp.json > all_linked_prs.json
+          else
+            echo "[]" > all_linked_prs.json
+          fi
+          rm -f all_linked_prs_temp.json
+          
+          # Count PRs by branch (excluding drafts if configured)
+          if [ "${{ env.ALLOW_DRAFT_PRS }}" = "false" ]; then
+            FILTER_DRAFT='and .isDraft == false'
+          else
+            FILTER_DRAFT=''
+          fi
+          
+          PRIMARY_PRS=$(jq -r --arg branch "${{ env.PRIMARY_BRANCH }}" \
+            '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
+            all_linked_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
+          
+          RELEASE_PRS=$(jq -r --arg branch "${{ env.RELEASE_BRANCH }}" \
+            '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
+            all_linked_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
+          
+          # Count PRs safely
+          if [ -z "$PRIMARY_PRS" ] || [ "$PRIMARY_PRS" = " " ]; then
+            PRIMARY_COUNT=0
+            PRIMARY_PRS=""
+          else
+            PRIMARY_COUNT=$(echo "$PRIMARY_PRS" | wc -w)
+          fi
+          
+          if [ -z "$RELEASE_PRS" ] || [ "$RELEASE_PRS" = " " ]; then
+            RELEASE_COUNT=0
+            RELEASE_PRS=""
+          else
+            RELEASE_COUNT=$(echo "$RELEASE_PRS" | wc -w)
+          fi
+          
+          # Output results
+          echo "primary_prs=$(echo $PRIMARY_PRS | tr ' ' ','  | sed 's/,$//' | sed 's/^,//')" >> $GITHUB_OUTPUT
+          echo "release_prs=$(echo $RELEASE_PRS | tr ' ' ',' | sed 's/,$//' | sed 's/^,//')" >> $GITHUB_OUTPUT
+          echo "primary_count=$PRIMARY_COUNT" >> $GITHUB_OUTPUT
+          echo "release_count=$RELEASE_COUNT" >> $GITHUB_OUTPUT
+          echo "total_prs=$((PRIMARY_COUNT + RELEASE_COUNT))" >> $GITHUB_OUTPUT
+          
+          echo "📊 PR Distribution:"
+          echo "  - ${{ env.PRIMARY_BRANCH }}: $PRIMARY_COUNT PRs"
+          echo "  - ${{ env.RELEASE_BRANCH }}: $RELEASE_COUNT PRs"
+
+      - name: Validate issue reference matching
+        id: validate_matching
+        if: steps.query_linked_prs.outputs.total_prs > 0
+        run: |
+          CURRENT_ISSUES="${{ steps.extract_issues.outputs.issue_refs }}"
+          
+          # For each PR in comparison branch, check if it has ALL the same issue refs
+          PRIMARY_PRS="${{ steps.query_linked_prs.outputs.primary_prs }}"
+          RELEASE_PRS="${{ steps.query_linked_prs.outputs.release_prs }}"
+          
+          # Determine which branch we're validating against
+          if [ "${{ github.event.pull_request.base.ref }}" = "${{ env.PRIMARY_BRANCH }}" ]; then
+            COMPARE_PRS="$RELEASE_PRS"
+            COMPARE_BRANCH="${{ env.RELEASE_BRANCH }}"
+          else
+            COMPARE_PRS="$PRIMARY_PRS"
+            COMPARE_BRANCH="${{ env.PRIMARY_BRANCH }}"
+          fi
+          
+          echo "Validating against branch: $COMPARE_BRANCH"
+          echo "Comparing PRs: $COMPARE_PRS"
+          
+          EXACT_MATCH_FOUND=false
+          MATCHING_PR_NUMBERS=""
+          
+          # Check each PR in comparison branch
+          for PR_NUM in $(echo $COMPARE_PRS | tr ',' ' '); do
+            # Get PR details from our cached data
+            PR_DATA=$(jq -r --arg num "$PR_NUM" \
+              '.[] | select(.number == ($num | tonumber))' all_linked_prs.json | head -1)
+            
+            PR_TEXT=$(echo "$PR_DATA" | jq -r '.title + " " + .body')
+            PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '#\d+' | sort -u | tr '\n' ',' | sed 's/,$//')
+            
+            echo "PR #$PR_NUM has issues: $PR_ISSUES"
+            
+            # Check if this PR has ALL the same issues
+            if [ "${{ env.REQUIRE_EXACT_MATCH }}" = "true" ]; then
+              if [ "$PR_ISSUES" = "$CURRENT_ISSUES" ]; then
+                EXACT_MATCH_FOUND=true
+                MATCHING_PR_NUMBERS="$MATCHING_PR_NUMBERS,$PR_NUM"
+                echo "✅ Exact match found in PR #$PR_NUM"
+              fi
+            else
+              # Check if PR has at least one matching issue
+              for ISSUE in $(echo $CURRENT_ISSUES | tr ',' ' '); do
+                if echo "$PR_ISSUES" | grep -q "$ISSUE"; then
+                  EXACT_MATCH_FOUND=true
+                  MATCHING_PR_NUMBERS="$MATCHING_PR_NUMBERS,$PR_NUM"
+                  echo "✅ Partial match found in PR #$PR_NUM"
+                  break
+                fi
+              done
+            fi
+          done
+          
+          MATCHING_PR_NUMBERS=$(echo "$MATCHING_PR_NUMBERS" | sed 's/^,//')
+          
+          echo "exact_match_found=$EXACT_MATCH_FOUND" >> $GITHUB_OUTPUT
+          echo "matching_pr_numbers=$MATCHING_PR_NUMBERS" >> $GITHUB_OUTPUT
+          echo "compare_branch=$COMPARE_BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Check branch imbalance
+        id: check_imbalance
+        if: steps.query_linked_prs.outputs.total_prs > 0
+        run: |
+          PRIMARY_COUNT=${{ steps.query_linked_prs.outputs.primary_count }}
+          RELEASE_COUNT=${{ steps.query_linked_prs.outputs.release_count }}
+          MAX_IMBALANCE=${{ env.MAX_BRANCH_IMBALANCE }}
+          
+          IMBALANCE=$((PRIMARY_COUNT > RELEASE_COUNT ? PRIMARY_COUNT - RELEASE_COUNT : RELEASE_COUNT - PRIMARY_COUNT))
+          
+          echo "imbalance=$IMBALANCE" >> $GITHUB_OUTPUT
+          
+          if [ $IMBALANCE -gt $MAX_IMBALANCE ]; then
+            echo "imbalance_exceeded=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Branch imbalance detected: $IMBALANCE (max: $MAX_IMBALANCE)"
+          else
+            echo "imbalance_exceeded=false" >> $GITHUB_OUTPUT
+            echo "✅ Branch balance acceptable: $IMBALANCE (max: $MAX_IMBALANCE)"
+          fi
+
+      - name: Check for override approval
+        id: check_override
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.pull_request.labels.map(label => label.name);
+            const hasOverride = labels.includes('${{ env.OVERRIDE_LABEL }}');
+            
+            core.setOutput('override_approved', hasOverride.toString());
+            
+            if (hasOverride) {
+              console.log('✅ Override label found - validation will be bypassed');
+            }
+            
+            return hasOverride;
+
+      - name: Check for pending validation in comparison branch
+        id: check_pending
+        if: steps.query_linked_prs.outputs.total_prs > 0
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const primaryPRs = '${{ steps.query_linked_prs.outputs.primary_prs }}'.split(',').filter(n => n);
+            const releasePRs = '${{ steps.query_linked_prs.outputs.release_prs }}'.split(',').filter(n => n);
+            const currentPR = context.payload.pull_request?.number;
+            const currentBranch = context.payload.pull_request?.base?.ref;
+            
+            // Determine comparison PRs based on current branch
+            const comparisonPRs = currentBranch === '${{ env.PRIMARY_BRANCH }}' ? releasePRs : primaryPRs;
+            
+            let hasPendingChecks = false;
+            let pendingPRNumbers = [];
+            
+            // Check if comparison PRs have pending validation checks
+            for (const prNum of comparisonPRs) {
+              try {
+                const { data: checkRuns } = await github.rest.checks.listForRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `refs/pull/${prNum}/head`,
+                  check_name: 'validate-cross-branch'
+                });
+                
+                const latestCheck = checkRuns.check_runs[0];
+                if (!latestCheck || latestCheck.status === 'queued' || latestCheck.status === 'in_progress') {
+                  hasPendingChecks = true;
+                  pendingPRNumbers.push(prNum);
+                  console.log(`PR #${prNum} has pending validation check`);
+                }
+              } catch (error) {
+                console.log(`Could not check status for PR #${prNum}: ${error.message}`);
+              }
+            }
+            
+            core.setOutput('has_pending', hasPendingChecks.toString());
+            core.setOutput('pending_prs', pendingPRNumbers.join(','));
+            
+            return { hasPendingChecks, pendingPRNumbers };
+
+      - name: Determine validation result
+        id: validation_result
+        if: steps.extract_issues.outputs.has_issues == 'true'
+        run: |
+          EXACT_MATCH="${{ steps.validate_matching.outputs.exact_match_found }}"
+          OVERRIDE="${{ steps.check_override.outputs.override_approved }}"
+          IMBALANCE_EXCEEDED="${{ steps.check_imbalance.outputs.imbalance_exceeded }}"
+          PRIMARY_COUNT=${{ steps.query_linked_prs.outputs.primary_count }}
+          RELEASE_COUNT=${{ steps.query_linked_prs.outputs.release_count }}
+          HAS_PENDING="${{ steps.check_pending.outputs.has_pending }}"
+          PENDING_PRS="${{ steps.check_pending.outputs.pending_prs }}"
+          
+          # Validation logic with pending check handling
+          if [ "$OVERRIDE" = "true" ]; then
+            RESULT="PASS_OVERRIDE"
+            MESSAGE="✅ Validation PASSED (Override approved)"
+            SHOULD_BLOCK="false"
+          elif [ "$EXACT_MATCH" = "true" ]; then
+            if [ "$IMBALANCE_EXCEEDED" = "true" ]; then
+              RESULT="WARN_IMBALANCE"
+              MESSAGE="⚠️ Validation WARNING: Matching PRs found but branch imbalance detected"
+              SHOULD_BLOCK="false"
+            else
+              RESULT="PASS"
+              MESSAGE="✅ Validation PASSED: Matching PRs found in both branches"
+              SHOULD_BLOCK="false"
+            fi
+          elif [ "$HAS_PENDING" = "true" ]; then
+            # NEW: Handle pending checks in comparison branch
+            RESULT="PENDING"
+            MESSAGE="⏳ Validation PENDING: Waiting for validation to complete in comparison branch (PR(s) #${PENDING_PRS})"
+            SHOULD_BLOCK="false"
+          elif [ $PRIMARY_COUNT -eq 0 ] || [ $RELEASE_COUNT -eq 0 ]; then
+            RESULT="FAIL_MISSING"
+            MESSAGE="❌ Validation FAILED: No matching PR found in comparison branch"
+            SHOULD_BLOCK="true"
+          else
+            RESULT="FAIL_MISMATCH"
+            MESSAGE="❌ Validation FAILED: Issue references don't match exactly"
+            SHOULD_BLOCK="true"
+          fi
+          
+          echo "result=$RESULT" >> $GITHUB_OUTPUT
+          echo "message=$MESSAGE" >> $GITHUB_OUTPUT
+          echo "should_block=$SHOULD_BLOCK" >> $GITHUB_OUTPUT
+          echo "$MESSAGE"
+
+      - name: Update all related PRs with synchronized status
+        id: sync_status
+        if: steps.query_linked_prs.outputs.total_prs > 0
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const primaryPRs = '${{ steps.query_linked_prs.outputs.primary_prs }}'.split(',').filter(n => n);
+            const releasePRs = '${{ steps.query_linked_prs.outputs.release_prs }}'.split(',').filter(n => n);
+            const allPRs = [...primaryPRs, ...releasePRs];
+            
+            const validationResult = '${{ steps.validation_result.outputs.result }}';
+            const validationMessage = '${{ steps.validation_result.outputs.message }}';
+            const shouldBlock = '${{ steps.validation_result.outputs.should_block }}' === 'true';
+            const issueRefs = '${{ steps.extract_issues.outputs.issue_refs }}';
+            const matchingPRs = '${{ steps.validate_matching.outputs.matching_pr_numbers }}';
+            const timestamp = '${{ steps.context.outputs.timestamp }}';
+            const imbalance = '${{ steps.check_imbalance.outputs.imbalance }}';
+            
+            // Build status comment
+            let commentBody = `## 🔄 Cross-Branch Validation Status
+            
+            **Last Updated:** ${timestamp}
+            **Validation Result:** ${validationMessage}
+            **Issue References:** ${issueRefs}
+            
+            ### 📊 PR Distribution
+            - **${{ env.PRIMARY_BRANCH }}:** ${primaryPRs.length} PR(s) ${primaryPRs.length > 0 ? `(#${primaryPRs.join(', #')})` : ''}
+            - **${{ env.RELEASE_BRANCH }}:** ${releasePRs.length} PR(s) ${releasePRs.length > 0 ? `(#${releasePRs.join(', #')})` : ''}
+            - **Branch Imbalance:** ${imbalance}
+            
+            `;
+            
+            if (validationResult === 'PENDING') {
+              const pendingPRs = '${{ steps.check_pending.outputs.pending_prs }}';
+              commentBody += `### ⏳ Validation Pending
+            
+            This PR is waiting for validation checks to complete in the comparison branch.
+            
+            **Pending PRs:** #${pendingPRs}
+            
+            Once the validation completes in the comparison branch, this PR will be automatically updated.
+            **No manual action required** - the system will sync automatically.
+            
+            `;
+            } else if (matchingPRs) {
+              commentBody += `### ✅ Matching PRs Found
+            - PR(s) #${matchingPRs} in comparison branch contain the same issue references
+            
+            `;
+            }
+            
+            if (shouldBlock) {
+              commentBody += `### ⚠️ Action Required
+            
+            This PR is **blocked** from merging. To proceed, you must either:
+            
+            1. **Create a matching PR** in the comparison branch with the same issue references
+            2. **Add the override label** \`${{ env.OVERRIDE_LABEL }}\` with justification
+            
+            #### Override Instructions:
+            1. Add label: \`${{ env.OVERRIDE_LABEL }}\`
+            2. Comment with justification (e.g., "This fix is specific to ${{ github.event.pull_request.base.ref }} only")
+            3. Re-run this workflow
+            
+            `;
+            }
+            
+            commentBody += `---
+            *Workflow Run: [#${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})*`;
+            
+            // Update each related PR
+            for (const prNumber of allPRs) {
+              try {
+                // Find existing validation comment
+                const comments = await github.rest.issues.listComments({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: parseInt(prNumber)
+                });
+                
+                const botComment = comments.data.find(comment => 
+                  comment.user.type === 'Bot' && 
+                  comment.body.includes('Cross-Branch Validation Status')
+                );
+                
+                if (botComment) {
+                  await github.rest.issues.updateComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: botComment.id,
+                    body: commentBody
+                  });
+                } else {
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: parseInt(prNumber),
+                    body: commentBody
+                  });
+                }
+                
+                // Update labels
+                if (shouldBlock) {
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: parseInt(prNumber),
+                    labels: ['${{ env.BLOCK_LABEL }}']
+                  });
+                } else {
+                  try {
+                    await github.rest.issues.removeLabel({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: parseInt(prNumber),
+                      name: '${{ env.BLOCK_LABEL }}'
+                    });
+                  } catch (error) {
+                    // Label might not exist
+                  }
+                }
+                
+                console.log(`✅ Updated PR #${prNumber}`);
+              } catch (error) {
+                console.error(`❌ Failed to update PR #${prNumber}:`, error.message);
+              }
+            }
+            
+            return {
+              updatedPRs: allPRs.length,
+              validationResult: validationResult
+            };
+
+      - name: Trigger validation on related PRs and wait for completion
+        id: trigger_related
+        if: |
+          steps.query_linked_prs.outputs.total_prs > 0 &&
+          steps.check_pending.outputs.has_pending == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pendingPRs = '${{ steps.check_pending.outputs.pending_prs }}'.split(',').filter(n => n);
+            const currentPR = context.payload.pull_request?.number;
+            
+            console.log(`Current PR: ${currentPR}`);
+            console.log(`Pending PRs to trigger: ${pendingPRs.join(', ')}`);
+            
+            const triggeredWorkflows = [];
+            
+            // Trigger workflow_dispatch on pending PRs
+            for (const prNumber of pendingPRs) {
+              try {
+                console.log(`Triggering validation for PR #${prNumber}...`);
+                
+                await github.rest.actions.createWorkflowDispatch({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: 'pr-validation-enhanced.yml',
+                  ref: '${{ github.event.repository.default_branch }}',
+                  inputs: {
+                    pr_number: prNumber.toString()
+                  }
+                });
+                
+                triggeredWorkflows.push(prNumber);
+                console.log(`✅ Triggered validation for PR #${prNumber}`);
+              } catch (error) {
+                console.log(`⚠️ Could not trigger validation for PR #${prNumber}: ${error.message}`);
+              }
+            }
+            
+            // Wait for triggered workflows to complete
+            if (triggeredWorkflows.length > 0) {
+              console.log(`Waiting for ${triggeredWorkflows.length} workflow(s) to complete...`);
+              
+              const maxWaitTime = 300000; // 5 minutes
+              const pollInterval = 10000; // 10 seconds
+              const startTime = Date.now();
+              
+              for (const prNumber of triggeredWorkflows) {
+                let completed = false;
+                
+                while (!completed && (Date.now() - startTime) < maxWaitTime) {
+                  await new Promise(resolve => setTimeout(resolve, pollInterval));
+                  
+                  try {
+                    // Check workflow runs for this PR
+                    const { data: runs } = await github.rest.actions.listWorkflowRuns({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      workflow_id: 'pr-validation-enhanced.yml',
+                      event: 'workflow_dispatch',
+                      per_page: 5
+                    });
+                    
+                    // Find the most recent run that matches our PR
+                    const recentRun = runs.workflow_runs.find(run => {
+                      return run.created_at > new Date(startTime).toISOString();
+                    });
+                    
+                    if (recentRun) {
+                      console.log(`PR #${prNumber} workflow status: ${recentRun.status} (${recentRun.conclusion})`);
+                      
+                      if (recentRun.status === 'completed') {
+                        completed = true;
+                        console.log(`✅ PR #${prNumber} validation completed with conclusion: ${recentRun.conclusion}`);
+                      }
+                    }
+                  } catch (error) {
+                    console.log(`Error checking workflow status for PR #${prNumber}: ${error.message}`);
+                  }
+                }
+                
+                if (!completed) {
+                  console.log(`⚠️ Timeout waiting for PR #${prNumber} validation to complete`);
+                }
+              }
+            }
+            
+            return {
+              triggeredPRs: triggeredWorkflows.length,
+              pendingPRs: pendingPRs
+            };
+
+      - name: Set pending status for waiting PRs
+        if: steps.validation_result.outputs.result == 'PENDING'
+        run: |
+          echo "::notice::Validation is pending - waiting for checks in comparison branch to complete"
+          echo "::notice::This PR will be automatically updated once comparison branch validation completes"
+          echo "Pending PRs: ${{ steps.check_pending.outputs.pending_prs }}"
+
+      - name: Block merge if validation fails
+        if: |
+          steps.validation_result.outputs.should_block == 'true' &&
+          steps.check_override.outputs.override_approved != 'true' &&
+          steps.validation_result.outputs.result != 'PENDING'
+        run: |
+          echo "::error::Cross-branch validation failed. See PR comments for details."
+          echo "::error::Add label '${{ env.OVERRIDE_LABEL }}' to override this check."
+          exit 1
+
+      - name: Validation summary
+        if: always()
+        run: |
+          echo "=== Enhanced Cross-Branch Validation Summary ==="
+          echo "Timestamp: ${{ steps.context.outputs.timestamp }}"
+          echo "Trigger: ${{ steps.context.outputs.trigger_event }}"
+          echo "Issue References: ${{ steps.extract_issues.outputs.issue_refs }}"
+          echo "Total Related PRs: ${{ steps.query_linked_prs.outputs.total_prs }}"
+          echo "Validation Result: ${{ steps.validation_result.outputs.result }}"
+          echo "Should Block: ${{ steps.validation_result.outputs.should_block }}"
+          echo "Override Approved: ${{ steps.check_override.outputs.override_approved }}"
+          echo "=============================================="
+
+# Made with Bob

@@ -1,0 +1,263 @@
+
+Scenario 1:
+
+We are given a scenario where the number of PRs for a given parent issue is different in the two branches (e.g., 5 open PRs in release-5.3.1 and 2 in main). The user asks for an optimized way to check the count.
+
+We have two options:
+Option 1: Go to the parent issue (which is a hyperlink like #54321) and filter all open PRs linked to that issue.
+Option 2: Go through all PRs in both branches and check for the issue reference.
+
+Option 1: Using the parent issue.
+
+We can get the parent issue number from the PR (by extracting the issue reference).
+
+Then, we can query the issue to get all open linked PRs (via the timeline events or linked pull requests).
+
+This method is more direct because we are looking at the issue itself, which should have links to all PRs that reference it.
+
+Option 2: Searching in both branches.
+
+We would have to search for the issue reference in the title/body of all open PRs in each branch.
+
+This is less efficient because we have to search through all open PRs in both branches.
+
+
+example Implementation :
+
+- name: Get Linked PRs via Parent Issue
+  id: get-linked-prs
+  run: |
+    # Extract issue number
+    ISSUE_NUMBER="${{ steps.extract-issue.outputs.issue_num }}"
+    
+    # Get all PRs linked to this issue (via GraphQL)
+    LINKED_PRS=$(gh api graphql -f query='
+      query($issueNumber: Int!, $repoOwner: String!, $repoName: String!) {
+        repository(owner: $repoOwner, name: $repoName) {
+          issue(number: $issueNumber) {
+            timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
+              nodes {
+                ... on CrossReferencedEvent {
+                  source {
+                    ... on PullRequest {
+                      number
+                      baseRefName
+                      state
+                      title
+                      url
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }' -f repoOwner="${{ github.repository_owner }}" \
+        -f repoName="${{ github.event.repository.name }}" \
+        -f issueNumber=$ISSUE_NUMBER \
+        --jq '.data.repository.issue.timelineItems.nodes[].source')
+    
+    # Parse and count by branch
+    echo "$LINKED_PRS" > linked_prs.json
+    PRIMARY_COUNT=$(jq -r --arg branch "${{ env.PRIMARY_BRANCH }}" \
+      'select(.baseRefName == $branch and .state == "OPEN") | .number' \
+      linked_prs.json | wc -l)
+    
+    RELEASE_COUNT=$(jq -r --arg branch "${{ env.RELEASE_BRANCH }}" \
+      'select(.baseRefName == $branch and .state == "OPEN") | .number' \
+      linked_prs.json | wc -l)
+    
+    echo "primary_count=$PRIMARY_COUNT" >> $GITHUB_OUTPUT
+    echo "release_count=$RELEASE_COUNT" >> $GITHUB_OUTPUT
+    echo "linked_prs_count=$((PRIMARY_COUNT + RELEASE_COUNT))" >> $GITHUB_OUTPUT
+    
+    # Store for later use
+    echo 'PRIMARY_PR_NUMBERS<<EOF' >> $GITHUB_ENV
+    jq -r --arg branch "${{ env.PRIMARY_BRANCH }}" \
+      'select(.baseRefName == $branch and .state == "OPEN") | .number' \
+      linked_prs.json | tr '\n' ',' >> $GITHUB_ENV
+    echo 'EOF' >> $GITHUB_ENV
+    
+    echo 'RELEASE_PR_NUMBERS<<EOF' >> $GITHUB_ENV
+    jq -r --arg branch "${{ env.RELEASE_BRANCH }}" \
+      'select(.baseRefName == $branch and .state == "OPEN") | .number' \
+      linked_prs.json | tr '\n' ',' >> $GITHUB_ENV
+    echo 'EOF' >> $GITHUB_ENV
+
+
+
+
+
+Scenario 2:
+
+
+What Happens:
+PR-A targets master, references #12345 → Blocked (no matching PR in release branch)
+
+Developer creates PR-B targets release, references same #12345 → Passes (finds PR-A)
+
+Developer merges PR-B thinking the fix is complete
+
+PR-A remains blocked with outdated validation because:
+
+The workflow hasn't re-run on PR-A
+
+PR-A still shows "No matching PR found" even though PR-B now exists (and was merged)
+
+The developer now has to manually re-run checks on PR-A to unblock it
+
+Root Cause:
+Each PR's validation is an isolated snapshot. When a matching PR is created or merged elsewhere, there's no automatic notification to update the first PR's status. The workflow doesn't proactively check if the environment has changed since the last run.
+
+The Core Issue:
+Validations aren't linked in real-time. PR-A and PR-B are functionally related (same parent issue), but GitHub Actions treats them as independent workflow runs with no cross-communication.
+
+Single Optimized Solution: Real-Time Cross-PR Status Monitor
+Approach: Create a central status tracking system that monitors ALL PRs with the same issue reference simultaneously.
+Implementation:
+yaml
+# .github/workflows/cross-pr-validation.yml
+name: Cross-PR Validation Monitor
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, closed]
+  workflow_dispatch:  # Manual trigger option
+
+env:
+  PRIMARY_BRANCH: 'master'
+  RELEASE_BRANCH: 'release-5.3.1'
+
+jobs:
+  validate-and-sync:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+      contents: read
+    
+    steps:
+      - name: Extract issue reference from ALL related PRs
+        id: find_related
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get current PR's issue reference
+          PR_TEXT="${{ github.event.pull_request.title }} ${{ github.event.pull_request.body }}"
+          CURRENT_ISSUE=$(echo "$PR_TEXT" | grep -oP '#\d+' | head -1)
+          
+          if [ -z "$CURRENT_ISSUE" ]; then
+            echo "No issue found in current PR"
+            exit 0
+          fi
+          
+          # Find ALL open PRs with this issue reference across repository
+          ALL_PR_DATA=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --state open \
+            --json number,title,body,baseRefName)
+          
+          # Filter for PRs with same issue reference
+          echo "$ALL_PR_DATA" | jq -r '.[] | select(.title + .body | contains("'"$CURRENT_ISSUE"'"))' > related_prs.json
+          
+          # Create arrays of PR numbers in each monitored branch
+          MASTER_PRS=$(jq -r 'select(.baseRefName == "'"$PRIMARY_BRANCH"'") | .number' related_prs.json | tr '\n' ' ')
+          RELEASE_PRS=$(jq -r 'select(.baseRefName == "'"$RELEASE_BRANCH"'") | .number' related_prs.json | tr '\n' ' ')
+          
+          echo "PRs in $PRIMARY_BRANCH: $MASTER_PRS"
+          echo "PRs in $RELEASE_BRANCH: $RELEASE_PRS"
+          
+          echo "master_prs=$MASTER_PRS" >> $GITHUB_OUTPUT
+          echo "release_prs=$RELEASE_PRS" >> $GITHUB_OUTPUT
+          echo "issue_ref=$CURRENT_ISSUE" >> $GITHUB_OUTPUT
+
+      - name: Update ALL related PRs simultaneously
+        id: update_all
+        if: steps.find_related.outputs.issue_ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          MASTER_COUNT=$(echo "${{ steps.find_related.outputs.master_prs }}" | wc -w)
+          RELEASE_COUNT=$(echo "${{ steps.find_related.outputs.release_prs }}" | wc -w)
+          
+          # Logic: Both branches need at least one PR or override
+          if [ $MASTER_COUNT -ge 1 ] && [ $RELEASE_COUNT -ge 1 ]; then
+            STATUS="✅ PASS"
+            COMMENT="Cross-branch validation PASSED: Found PRs in both branches"
+            LABEL_ACTION="remove"
+          else
+            STATUS="❌ BLOCKED"
+            COMMENT="Cross-branch validation FAILED: Missing PR in one branch"
+            LABEL_ACTION="add"
+          fi
+          
+          # Update ALL related PRs with same status
+          ALL_PRS="${{ steps.find_related.outputs.master_prs }} ${{ steps.find_related.outputs.release_prs }}"
+          
+          for PR_NUM in $ALL_PRS; do
+            echo "Updating PR #$PR_NUM with status: $STATUS"
+            
+            # Post/update comment
+            gh pr comment $PR_NUM \
+              --body "**Cross-PR Monitor Update** ($(date))
+              
+              Issue: ${{ steps.find_related.outputs.issue_ref }}
+              Status: $STATUS
+              
+              **Related PRs:**
+              - $PRIMARY_BRANCH: ${{ steps.find_related.outputs.master_prs }}
+              - $RELEASE_BRANCH: ${{ steps.find_related.outputs.release_prs }}
+              
+              $COMMENT"
+            
+            # Update label
+            if [ "$LABEL_ACTION" = "add" ]; then
+              gh pr edit $PR_NUM --add-label "cross-branch-validation-pending"
+            else
+              gh pr edit $PR_NUM --remove-label "cross-branch-validation-pending"
+            fi
+          done
+          
+          echo "updated_prs=$ALL_PRS" >> $GITHUB_OUTPUT
+How This Solves the Problem:
+Holistic View: Every time ANY related PR changes, the workflow checks ALL PRs with the same issue reference
+
+Simultaneous Updates: Updates status on ALL related PRs at once, not just the triggering PR
+
+Real-time Sync: When PR-B is created, PR-A immediately gets updated status
+
+Single Source of Truth: All related PRs show consistent status based on current reality
+
+Key Benefits:
+No stale validations - All PRs update together
+
+Simple to understand - One workflow handles everything
+
+Reduces manual steps - No need to re-run checks manually
+
+Clear visibility - All related PRs are listed in each PR's comment
+
+Workflow Triggering:
+The workflow triggers on ANY change to ANY PR. When PR-B is created, it triggers the workflow which:
+
+Finds all PRs with same issue reference (including PR-A)
+
+Calculates the current validation status
+
+Updates ALL related PRs with the same consistent status
+
+This ensures PR-A and PR-B always show synchronized validation status, eliminating the "forgot to re-run first PR" problem entirely.
+
+
+
+Scenario 3 :
+
+Core Principle:
+If PR-A references issues #12345 and #67890, then PR-B in the other branch must also reference BOTH #12345 and #67890 in its title or body.
+
+Validation Rule:
+Exact match required: The PR in the comparison branch must contain ALL the same issue references
+
+Single PR requirement: Must be the same PR (not multiple PRs each covering some issues)
+
+Case-sensitive: References must match exactly (#12345 not #12345 in one and #12345 in another)
