@@ -212,6 +212,7 @@ jobs:
         id: validate_matching
         if: steps.query_linked_prs.outputs.total_prs > 0
         run: |
+          set +e  # Don't exit on errors, handle them gracefully
           CURRENT_ISSUES="${{ steps.extract_issues.outputs.issue_refs }}"
           
           echo "🔍 DEBUG: Current issues: $CURRENT_ISSUES"
@@ -280,12 +281,19 @@ jobs:
               fi
               
               echo "🔍 DEBUG: PR #$PR_NUM data found"
+              echo "🔍 DEBUG: PR #$PR_NUM raw data: $PR_DATA"
               
-              PR_TEXT=$(echo "$PR_DATA" | jq -r '.title + " " + .body' 2>/dev/null)
-              if [ $? -ne 0 ]; then
-                echo "⚠️ Failed to extract text from PR #$PR_NUM data"
+              # Extract title and body separately with error handling
+              PR_TITLE=$(echo "$PR_DATA" | jq -r '.title // ""' 2>/dev/null)
+              PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""' 2>/dev/null)
+              
+              if [ -z "$PR_TITLE" ] && [ -z "$PR_BODY" ]; then
+                echo "⚠️ Failed to extract title/body from PR #$PR_NUM data"
                 continue
               fi
+              
+              PR_TEXT="$PR_TITLE $PR_BODY"
+              echo "🔍 DEBUG: PR #$PR_NUM text extracted successfully"
               
               PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '#\d+' | sort -u | tr '\n' ',' | sed 's/,$//')
               
