@@ -141,8 +141,13 @@ jobs:
               -F issueNumber="$ISSUE_NUM" 2>&1)
             
             if [ $? -eq 0 ]; then
-              # Extract PRs from this issue and append
-              echo "$RESULT" | jq -c '.data.repository.issue.timelineItems.nodes[].source | select(. != null)' >> all_linked_prs_temp.json
+              # Validate the result is valid JSON
+              if echo "$RESULT" | jq empty 2>/dev/null; then
+                # Extract PRs from this issue and append (only if they exist)
+                echo "$RESULT" | jq -c '.data.repository.issue.timelineItems.nodes[].source | select(. != null)' 2>/dev/null >> all_linked_prs_temp.json || true
+              else
+                echo "⚠️ Invalid JSON response for issue #$ISSUE_NUM"
+              fi
             else
               echo "⚠️ Failed to query issue #$ISSUE_NUM: $RESULT"
             fi
@@ -150,7 +155,13 @@ jobs:
           
           # Combine all PRs and remove duplicates
           if [ -s all_linked_prs_temp.json ]; then
-            jq -s 'unique_by(.number)' all_linked_prs_temp.json > all_linked_prs.json
+            # Validate temp file before processing
+            if jq empty all_linked_prs_temp.json 2>/dev/null; then
+              jq -s 'unique_by(.number)' all_linked_prs_temp.json > all_linked_prs.json 2>/dev/null || echo "[]" > all_linked_prs.json
+            else
+              echo "⚠️ Invalid JSON in temp file, creating empty array"
+              echo "[]" > all_linked_prs.json
+            fi
           else
             echo "[]" > all_linked_prs.json
           fi
