@@ -249,8 +249,7 @@ jobs:
           # Check each PR in comparison branch
           for PR_NUM in $(echo $COMPARE_PRS | tr ',' ' '); do
             # Get PR details from our cached data
-            PR_DATA=$(jq -r --arg num "$PR_NUM" \
-              '.[] | select(.number == ($num | tonumber))' all_linked_prs.json | head -1)
+            PR_DATA=$(jq -r --arg num "$PR_NUM" '.[] | select(.number == ($num | tonumber)) | (.title + " " + (.body // ""))' all_linked_prs.json)
             
             PR_TEXT=$(echo "$PR_DATA" | jq -r '.title + " " + .body')
             PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '#\d+' | sort -u | tr '\n' ',' | sed 's/,$//')
