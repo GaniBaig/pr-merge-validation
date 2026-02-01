@@ -14,7 +14,7 @@ on:
 
 # Configuration: Update these for each release cycle
 env:
-  PRIMARY_BRANCH: 'master'
+  PRIMARY_BRANCH: 'main'
   RELEASE_BRANCH: 'release-5.3.1'
   # Validation rules
   REQUIRE_EXACT_MATCH: 'true'           # All issue refs must match exactly
@@ -90,15 +90,18 @@ jobs:
           
           echo "Querying issues: $ISSUE_NUMBERS"
           
-          # Convert comma-separated to array for GraphQL
-          ISSUE_ARRAY=$(echo "$ISSUE_NUMBERS" | tr ',' '\n' | sed 's/#//g' | jq -R . | jq -s .)
+          # Initialize empty array for all PRs
+          > all_linked_prs_temp.json
           
-          # GraphQL query to get all PRs linked to these issues
-          QUERY=$(cat <<'EOF'
-          query($owner: String!, $repo: String!, $issueNumbers: [Int!]!) {
-            repository(owner: $owner, name: $repo) {
-              issues(first: 10, filterBy: {numbers: $issueNumbers}) {
-                nodes {
+          # Query each issue individually using GraphQL
+          for ISSUE_REF in $(echo "$ISSUE_NUMBERS" | tr ',' ' '); do
+            ISSUE_NUM=$(echo "$ISSUE_REF" | sed 's/#//g')
+            echo "Querying issue #$ISSUE_NUM..."
+            
+            # GraphQL query for single issue
+            QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
                   number
                   title
                   timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
@@ -128,44 +131,64 @@ jobs:
                   }
                 }
               }
-            }
-          }
-          EOF
-          )
+            }'
+            
+            # Execute GraphQL query for this issue
+            RESULT=$(gh api graphql \
+              -f query="$QUERY" \
+              -f owner="${{ github.repository_owner }}" \
+              -f repo="${{ github.event.repository.name }}" \
+              -F issueNumber="$ISSUE_NUM" 2>&1)
+            
+            if [ $? -eq 0 ]; then
+              # Extract PRs from this issue and append
+              echo "$RESULT" | jq -c '.data.repository.issue.timelineItems.nodes[].source | select(. != null)' >> all_linked_prs_temp.json
+            else
+              echo "⚠️ Failed to query issue #$ISSUE_NUM: $RESULT"
+            fi
+          done
           
-          # Execute GraphQL query
-          RESULT=$(gh api graphql \
-            -f query="$QUERY" \
-            -f owner="${{ github.repository_owner }}" \
-            -f repo="${{ github.event.repository.name }}" \
-            -f issueNumbers="$ISSUE_ARRAY")
-          
-          echo "$RESULT" > graphql_result.json
-          
-          # Parse and extract PR information
-          jq -r '.data.repository.issues.nodes[].timelineItems.nodes[].source | select(. != null)' \
-            graphql_result.json > all_linked_prs.json
+          # Combine all PRs and remove duplicates
+          if [ -s all_linked_prs_temp.json ]; then
+            jq -s 'unique_by(.number)' all_linked_prs_temp.json > all_linked_prs.json
+          else
+            echo "[]" > all_linked_prs.json
+          fi
+          rm -f all_linked_prs_temp.json
           
           # Count PRs by branch (excluding drafts if configured)
           if [ "${{ env.ALLOW_DRAFT_PRS }}" = "false" ]; then
-            FILTER_DRAFT='select(.isDraft == false)'
+            FILTER_DRAFT='and .isDraft == false'
           else
-            FILTER_DRAFT='.'
+            FILTER_DRAFT=''
           fi
           
           PRIMARY_PRS=$(jq -r --arg branch "${{ env.PRIMARY_BRANCH }}" \
-            'select(.baseRefName == $branch and .state == "OPEN") | '"$FILTER_DRAFT"' | .number' \
-            all_linked_prs.json | sort -u)
+            '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
+            all_linked_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
           
           RELEASE_PRS=$(jq -r --arg branch "${{ env.RELEASE_BRANCH }}" \
-            'select(.baseRefName == $branch and .state == "OPEN") | '"$FILTER_DRAFT"' | .number' \
-            all_linked_prs.json | sort -u)
+            '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
+            all_linked_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
           
-          PRIMARY_COUNT=$(echo "$PRIMARY_PRS" | grep -c . || echo "0")
-          RELEASE_COUNT=$(echo "$RELEASE_PRS" | grep -c . || echo "0")
+          # Count PRs safely
+          if [ -z "$PRIMARY_PRS" ] || [ "$PRIMARY_PRS" = " " ]; then
+            PRIMARY_COUNT=0
+            PRIMARY_PRS=""
+          else
+            PRIMARY_COUNT=$(echo "$PRIMARY_PRS" | wc -w)
+          fi
           
-          echo "primary_prs=$(echo $PRIMARY_PRS | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
-          echo "release_prs=$(echo $RELEASE_PRS | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
+          if [ -z "$RELEASE_PRS" ] || [ "$RELEASE_PRS" = " " ]; then
+            RELEASE_COUNT=0
+            RELEASE_PRS=""
+          else
+            RELEASE_COUNT=$(echo "$RELEASE_PRS" | wc -w)
+          fi
+          
+          # Output results
+          echo "primary_prs=$(echo $PRIMARY_PRS | tr ' ' ','  | sed 's/,$//' | sed 's/^,//')" >> $GITHUB_OUTPUT
+          echo "release_prs=$(echo $RELEASE_PRS | tr ' ' ',' | sed 's/,$//' | sed 's/^,//')" >> $GITHUB_OUTPUT
           echo "primary_count=$PRIMARY_COUNT" >> $GITHUB_OUTPUT
           echo "release_count=$RELEASE_COUNT" >> $GITHUB_OUTPUT
           echo "total_prs=$((PRIMARY_COUNT + RELEASE_COUNT))" >> $GITHUB_OUTPUT
@@ -203,7 +226,7 @@ jobs:
           for PR_NUM in $(echo $COMPARE_PRS | tr ',' ' '); do
             # Get PR details from our cached data
             PR_DATA=$(jq -r --arg num "$PR_NUM" \
-              'select(.number == ($num | tonumber))' all_linked_prs.json)
+              '.[] | select(.number == ($num | tonumber))' all_linked_prs.json | head -1)
             
             PR_TEXT=$(echo "$PR_DATA" | jq -r '.title + " " + .body')
             PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '#\d+' | sort -u | tr '\n' ',' | sed 's/,$//')
