@@ -249,11 +249,15 @@ jobs:
           # Check each PR in comparison branch
           for PR_NUM in $(echo $COMPARE_PRS | tr ',' ' '); do
             # Get PR details from our cached data
-            PR_DATA=$(sed -n '/^\[/,$p' all_linked_prs.json | jq -r --arg num "$PR_NUM" \
-            '.[] | select(.number == ($num | tonumber)) | (.title + " " + (.body // ""))')
-
+            # Get PR details from our cached data
+            PR_TEXT=$(jq -r --argjson num "$PR_NUM" \
+              '.[] | select(.number == $num) | (.title + " " + (.body // ""))' all_linked_prs.json 2>/dev/null || echo "")
+            if [ -z "$PR_TEXT" ]; then
+              echo "Could not find PR #$PR_NUM in JSON data"
+              continue
+            fi
             
-            PR_TEXT=$(echo "$PR_DATA" | jq -r '.title + " " + .body')
+            # PR_TEXT=$(echo "$PR_DATA" | jq -r '.title + " " + .body')
             PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '#\d+' | sort -u | tr '\n' ',' | sed 's/,$//')
             
             echo "PR #$PR_NUM has issues: $PR_ISSUES"
