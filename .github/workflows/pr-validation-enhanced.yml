@@ -14,7 +14,7 @@ on:
 
 # Configuration: Update these for each release cycle
 env:
-  PRIMARY_BRANCH: 'master'
+  PRIMARY_BRANCH: 'main'
   RELEASE_BRANCH: 'release-5.3.1'
   # Validation rules
   REQUIRE_EXACT_MATCH: 'true'           # All issue refs must match exactly
