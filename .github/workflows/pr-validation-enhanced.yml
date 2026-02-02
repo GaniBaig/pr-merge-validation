@@ -99,7 +99,7 @@ jobs:
           # Query each issue individually using GraphQL
           for ISSUE_REF in $(echo "$ISSUE_NUMBERS" | tr ',' ' '); do
             ISSUE_NUM=$(echo "$ISSUE_REF" | sed 's/#//g')
-            echo "Querying issue #$ISSUE_NUM..."
+            echo "=== DEBUG: Querying issue #$ISSUE_NUM ==="
             
             # GraphQL query for single issue
             QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
@@ -137,18 +137,28 @@ jobs:
             }'
             
             # Execute GraphQL query for this issue
+            echo "DEBUG: Executing GraphQL query..."
             RESULT=$(gh api graphql \
               -f query="$QUERY" \
               -f owner="${{ github.repository_owner }}" \
               -f repo="${{ github.event.repository.name }}" \
               -F issueNumber="$ISSUE_NUM" 2>&1)
             
+            echo "DEBUG: GraphQL exit code: $?"
+            echo "DEBUG: GraphQL response (first 200 chars):"
+            echo "$RESULT" | head -c 200
+            echo ""
+            
             if [ $? -eq 0 ]; then
               # Extract PRs from this issue and append
+              echo "DEBUG: Extracting PRs from response..."
               echo "$RESULT" | jq -c '.data.repository.issue.timelineItems.nodes[].source | select(. != null)' >> all_linked_prs_temp.json
+              echo "DEBUG: Extraction complete"
             else
               echo "⚠️ Failed to query issue #$ISSUE_NUM: $RESULT"
             fi
+            echo "=== END DEBUG for issue #$ISSUE_NUM ==="
+            echo ""
           done
           
           # Combine all PRs and remove duplicates
