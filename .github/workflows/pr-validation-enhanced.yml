@@ -145,8 +145,8 @@ jobs:
               -F issueNumber="$ISSUE_NUM" 2>&1)
             
             echo "DEBUG: GraphQL exit code: $?"
-            echo "DEBUG: GraphQL response (first 200 chars):"
-            echo "$RESULT" | head -c 200
+            echo "DEBUG: GraphQL response"
+            echo "$RESULT"
             echo ""
             
             if [ $? -eq 0 ]; then
