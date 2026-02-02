@@ -196,7 +196,8 @@ jobs:
           RELEASE_PRS=$(jq -r --arg branch "${{ env.RELEASE_BRANCH }}" \
             '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
             all_linked_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
-          
+          echo "primary_pr $PRIMARY_PRS"
+          echo "RELEASE_PRS $RELEASE_PRS"
           # Count PRs safely
           if [ -z "$PRIMARY_PRS" ] || [ "$PRIMARY_PRS" = " " ]; then
             PRIMARY_COUNT=0
