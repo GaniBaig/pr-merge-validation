@@ -62,8 +62,11 @@ jobs:
           PR_BODY="${{ github.event.pull_request.body }}"
           PR_TEXT="$PR_TITLE $PR_BODY"
           
-          # Extract ALL issue references (not just first one)
-          ISSUE_REFS=$(echo "$PR_TEXT" | grep -oP '#\d+' | sort -u | tr '\n' ',' | sed 's/,$//')
+          # Extract ALL issue references from markdown hyperlinks [#N](url) and plain #N references
+          # First extract from markdown links, then from plain references, then combine and deduplicate
+          MARKDOWN_REFS=$(echo "$PR_TEXT" | grep -oP '\[#\K\d+(?=\])' | sort -u | tr '\n' ',')
+          PLAIN_REFS=$(echo "$PR_TEXT" | grep -oP '(?<!\[)#\K\d+(?!\])' | sort -u | tr '\n' ',')
+          ISSUE_REFS=$(echo "${MARKDOWN_REFS}${PLAIN_REFS}" | tr ',' '\n' | grep -v '^$' | sort -u | tr '\n' ',' | sed 's/,$//')
           
           if [ -z "$ISSUE_REFS" ]; then
             echo "has_issues=false" >> $GITHUB_OUTPUT
@@ -252,14 +255,17 @@ jobs:
             # Get PR details from our cached data
             PR_TEXT=$(jq -r --argjson num "$PR_NUM" \
               '.[] | select(.number == $num) | (.title + " " + (.body // ""))' all_linked_prs.json 2>/dev/null || echo "")
-            echo "$PR_TEXT"
+            
             if [ -z "$PR_TEXT" ]; then
               echo "Could not find PR #$PR_NUM in JSON data"
               continue
             fi
             
-            # PR_TEXT=$(echo "$PR_DATA" | jq -r '.title + " " + .body')
-            PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '#\d+' | sort -u | tr '\n' ',' | sed 's/,$//')
+            # Extract issue numbers from markdown hyperlinks [#N](url) and plain #N references
+            # First extract from markdown links, then from plain references, then combine and deduplicate
+            PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '\[#\K\d+(?=\])' | sort -u | tr '\n' ',')
+            PLAIN_ISSUES=$(echo "$PR_TEXT" | grep -oP '(?<!\[)#\K\d+(?!\])' | sort -u | tr '\n' ',')
+            PR_ISSUES=$(echo "${PR_ISSUES}${PLAIN_ISSUES}" | tr ',' '\n' | grep -v '^$' | sort -u | tr '\n' ',' | sed 's/,$//')
             
             echo "PR #$PR_NUM has issues: $PR_ISSUES"
             
