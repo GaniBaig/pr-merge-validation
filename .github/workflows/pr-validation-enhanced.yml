@@ -263,7 +263,8 @@ jobs:
             if [ "$PR_URLS_SORTED" = "$CURRENT_URLS_SORTED" ]; then
               echo "  :white_check_mark: PR #$PR_NUM has matching issue URLs"
               # Add this PR to filtered list
-              jq ".[$i]" all_linked_prs.json | jq -s '. + input' filtered_prs.json - > filtered_prs_temp.json
+              jq --slurpfile existing filtered_prs.json --argjson idx "$i" \
+              '$existing[0] + [.[$idx]]' all_linked_prs.json > filtered_prs_temp.json
               mv filtered_prs_temp.json filtered_prs.json
             else
               echo "  :x: PR #$PR_NUM has different issue URLs"
