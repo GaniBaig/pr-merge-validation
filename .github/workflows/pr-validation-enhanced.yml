@@ -248,19 +248,25 @@ jobs:
             fi
           done
           
-          # Count filtered PRs by branch
+          # Filter to only OPEN PRs with PRIMARY or RELEASE branch as base
           if [ "${{ env.ALLOW_DRAFT_PRS }}" = "false" ]; then
             FILTER_DRAFT='and .isDraft == false'
           else
             FILTER_DRAFT=''
           fi
           
+          jq --arg primary "${{ env.PRIMARY_BRANCH }}" --arg release "${{ env.RELEASE_BRANCH }}" \
+            '[.[] | select(.state == "OPEN" and (.baseRefName == $primary or .baseRefName == $release) '"$FILTER_DRAFT"')]' \
+            filtered_prs.json > filtered_prs_temp.json
+          mv filtered_prs_temp.json filtered_prs.json
+          
+          # Count filtered PRs by branch
           FILTERED_PRIMARY_PRS=$(jq -r --arg branch "${{ env.PRIMARY_BRANCH }}" \
-            '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
+            '.[] | select(.baseRefName == $branch) | .number' \
             filtered_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
           
           FILTERED_RELEASE_PRS=$(jq -r --arg branch "${{ env.RELEASE_BRANCH }}" \
-            '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
+            '.[] | select(.baseRefName == $branch) | .number' \
             filtered_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
           
           # Count filtered PRs safely
