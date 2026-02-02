@@ -1,30 +1,22 @@
-shell: /usr/bin/bash -e {0}
-  env:
-    PRIMARY_BRANCH: main
-    RELEASE_BRANCH: checking-2
-    REQUIRE_EXACT_MATCH: true
-    ALLOW_DRAFT_PRS: false
-    MAX_BRANCH_IMBALANCE: 2
-    OVERRIDE_LABEL: approved:single-branch-merge
-    BLOCK_LABEL: merge-blocked:cross-branch-validation
-Current PR issue URLs: 16,5
+Run CURRENT_ISSUE_URLS="https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5"
+Current PR issue URLs: https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5
 Total PRs to check: 7
 Checking PR #6...
   PR #6 issue URLs: https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5
 PR_URLS_SORTED : https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5
-CURRENT_URLS_SORTED : 16,5
-  :x: PR #6 has different issue URLs
+CURRENT_URLS_SORTED : https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5
+  :white_check_mark: PR #6 has matching issue URLs
 Checking PR #7...
   PR #7 issue URLs: https://github.com/GaniBaig/pr-merge-validation/issues/5
 PR_URLS_SORTED : https://github.com/GaniBaig/pr-merge-validation/issues/5
-CURRENT_URLS_SORTED : 16,5
+CURRENT_URLS_SORTED : https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5
   :x: PR #7 has different issue URLs
 Checking PR #9...
   PR #9 has no issue URLs, skipping
 Checking PR #12...
   PR #12 issue URLs: https://github.com/GaniBaig/pr-merge-validation/issues/5
 PR_URLS_SORTED : https://github.com/GaniBaig/pr-merge-validation/issues/5
-CURRENT_URLS_SORTED : 16,5
+CURRENT_URLS_SORTED : https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5
   :x: PR #12 has different issue URLs
 Checking PR #13...
   PR #13 has no issue URLs, skipping
@@ -33,12 +25,43 @@ Checking PR #14...
 Checking PR #15...
   PR #15 issue URLs: https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5
 PR_URLS_SORTED : https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5
-CURRENT_URLS_SORTED : 16,5
-  :x: PR #15 has different issue URLs
+CURRENT_URLS_SORTED : https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5
+  :white_check_mark: PR #15 has matching issue URLs
 
 :bar_chart: Filtered PR Distribution (matching issue URLs only):
-  - main: 0 PRs ()
-  - checking-2: 0 PRs ()
+  - main: 1 PRs (6 )
+  - checking-2: 1 PRs (15 )
 
 === Filtered PRs JSON ===
-[]
+[
+  {
+    "number": 6,
+    "title": "Create README.md",
+    "body": "[#5](https://github.com/GaniBaig/pr-merge-validation/issues/5) new hey\r\n[#16](https://github.com/GaniBaig/pr-merge-validation/issues/16) hiii",
+    "baseRefName": "main",
+    "state": "OPEN",
+    "isDraft": false,
+    "url": "https://github.com/GaniBaig/pr-merge-validation/pull/6",
+    "labels": {
+      "nodes": []
+    },
+    "author": {
+      "login": "GaniBaig"
+    }
+  },
+  {
+    "number": 15,
+    "title": "Update README_input.md",
+    "body": "[#5](https://github.com/GaniBaig/pr-merge-validation/issues/5) hello hi hello hi ji ko ji kfefgfoj djlkdndfklndff\r\n[#16](https://github.com/GaniBaig/pr-merge-validation/issues/16) hihh jjj",
+    "baseRefName": "checking-2",
+    "state": "OPEN",
+    "isDraft": false,
+    "url": "https://github.com/GaniBaig/pr-merge-validation/pull/15",
+    "labels": {
+      "nodes": []
+    },
+    "author": {
+      "login": "GaniBaig"
+    }
+  }
+]

@@ -63,7 +63,6 @@ jobs:
           PR_TEXT="$PR_TITLE $PR_BODY"
           
           # Extract issue URLs from markdown hyperlinks [#N](url)
-          # Pattern: [#N](https://github.com/owner/repo/issues/N)
           ISSUE_URLS=$(echo "$PR_TEXT" | grep -oP '\[#\d+\]\(\K[^)]+(?=\))' | grep 'github.com.*issues' | sort -u | tr '\n' ',' | sed 's/,$//')
           
           if [ -z "$ISSUE_URLS" ]; then
@@ -86,7 +85,6 @@ jobs:
             ISSUE_NUMBERS="${{ github.event.inputs.issue_number }}"
           else
             ISSUE_URLS="${{ steps.extract_issues.outputs.issue_refs }}"
-            # Extract issue numbers from URLs for GraphQL queries
             ISSUE_NUMBERS=$(echo "$ISSUE_URLS" | tr ',' '\n' | grep -oP 'issues/\K\d+' | tr '\n' ',' | sed 's/,$//')
           fi
           
@@ -99,9 +97,7 @@ jobs:
           IFS=',' read -ra ISSUE_ARRAY <<< "$ISSUE_NUMBERS"
           for ISSUE_REF in "${ISSUE_ARRAY[@]}"; do
             ISSUE_NUM=$(echo "$ISSUE_REF" | sed 's/#//g')
-            echo "=== DEBUG: Querying issue #$ISSUE_NUM ==="
             
-            # GraphQL query for single issue
             QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
               repository(owner: $owner, name: $repo) {
                 issue(number: $issueNumber) {
@@ -136,33 +132,17 @@ jobs:
               }
             }'
             
-            # Execute GraphQL query for this issue
-            echo "DEBUG: Executing GraphQL query..."
             RESULT=$(gh api graphql \
               -f query="$QUERY" \
               -f owner="${{ github.repository_owner }}" \
               -f repo="${{ github.event.repository.name }}" \
               -F issueNumber="$ISSUE_NUM" 2>&1)
             
-            echo "DEBUG: GraphQL exit code: $?"
-            echo "DEBUG: GraphQL response"
-            echo "$RESULT"
-            echo ""
-            
             if [ $? -eq 0 ]; then
-              # Extract PRs from this issue and append
-              echo "DEBUG: Extracting PRs from response..."
-              cat all_linked_prs_temp.json 
-              echo "$RESULT" \
-              | jq -c '.data.repository.issue.timelineItems.nodes[].source' \
-              >> all_linked_prs_temp.json
-              cat all_linked_prs_temp.json
-              echo "DEBUG: Extraction complete"
+              echo "$RESULT" | jq -c '.data.repository.issue.timelineItems.nodes[].source' >> all_linked_prs_temp.json
             else
-              echo "⚠️ Failed to query issue #$ISSUE_NUM: $RESULT"
+              echo "⚠️ Failed to query issue #$ISSUE_NUM"
             fi
-            echo "=== END DEBUG for issue #$ISSUE_NUM ==="
-            echo ""
           done
           
           # Combine all PRs and remove duplicates
@@ -173,7 +153,7 @@ jobs:
           fi
           rm -f all_linked_prs_temp.json
           
-          # Count PRs by branch (excluding drafts if configured)
+          # Count PRs by branch
           if [ "${{ env.ALLOW_DRAFT_PRS }}" = "false" ]; then
             FILTER_DRAFT='and .isDraft == false'
           else
@@ -187,8 +167,7 @@ jobs:
           RELEASE_PRS=$(jq -r --arg branch "${{ env.RELEASE_BRANCH }}" \
             '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
             all_linked_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
-          echo "primary_pr $PRIMARY_PRS"
-          echo "RELEASE_PRS $RELEASE_PRS"
+          
           # Count PRs safely
           if [ -z "$PRIMARY_PRS" ] || [ "$PRIMARY_PRS" = " " ]; then
             PRIMARY_COUNT=0
@@ -210,12 +189,10 @@ jobs:
           echo "primary_count=$PRIMARY_COUNT" >> $GITHUB_OUTPUT
           echo "release_count=$RELEASE_COUNT" >> $GITHUB_OUTPUT
           echo "total_prs=$((PRIMARY_COUNT + RELEASE_COUNT))" >> $GITHUB_OUTPUT
-          cat "$GITHUB_OUTPUT"
+          
           echo "📊 PR Distribution:"
           echo "  - ${{ env.PRIMARY_BRANCH }}: $PRIMARY_COUNT PRs"
           echo "  - ${{ env.RELEASE_BRANCH }}: $RELEASE_COUNT PRs"
-          echo "=== all characters ==="
-          cat all_linked_prs.json
       - name: Filter PRs by matching issue URLs
         id: filter_prs
         if: steps.extract_issues.outputs.has_issues == 'true' && steps.query_linked_prs.outputs.total_prs > 0
