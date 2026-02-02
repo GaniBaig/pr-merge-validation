@@ -65,9 +65,11 @@ jobs:
           # Extract ALL issue references from markdown hyperlinks [#N](url) and plain #N references
           # First extract from markdown links, then from plain references, then combine and deduplicate
           MARKDOWN_REFS=$(echo "$PR_TEXT" | grep -oP '\[#\K\d+(?=\])' | sort -u | tr '\n' ',')
+          echo "MARKDOWN_REFS : $MARKDOWN_REFS"
           PLAIN_REFS=$(echo "$PR_TEXT" | grep -oP '(?<!\[)#\K\d+(?!\])' | sort -u | tr '\n' ',')
+          echo "PLAIN_REFS : $PLAIN_REFS"
           ISSUE_REFS=$(echo "${MARKDOWN_REFS}${PLAIN_REFS}" | tr ',' '\n' | grep -v '^$' | sort -u | tr '\n' ',' | sed 's/,$//')
-          
+          echo "ISSUE_REFS : $ISSUE_REFS"
           if [ -z "$ISSUE_REFS" ]; then
             echo "has_issues=false" >> $GITHUB_OUTPUT
             echo "⚠️ No issue references found in PR"
