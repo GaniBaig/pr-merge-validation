@@ -62,22 +62,18 @@ jobs:
           PR_BODY="${{ github.event.pull_request.body }}"
           PR_TEXT="$PR_TITLE $PR_BODY"
           
-          # Extract ALL issue references from markdown hyperlinks [#N](url) and plain #N references
-          # First extract from markdown links, then from plain references, then combine and deduplicate
-          MARKDOWN_REFS=$(echo "$PR_TEXT" | grep -oP '\[#\K\d+(?=\])' | sort -u | tr '\n' ',')
-          echo "MARKDOWN_REFS : $MARKDOWN_REFS"
-          PLAIN_REFS=$(echo "$PR_TEXT" | grep -oP '(?<!\[)#\K\d+(?!\])' | sort -u | tr '\n' ',')
-          echo "PLAIN_REFS : $PLAIN_REFS"
-          ISSUE_REFS=$(echo "${MARKDOWN_REFS}${PLAIN_REFS}" | tr ',' '\n' | grep -v '^$' | sort -u | tr '\n' ',' | sed 's/,$//')
-          echo "ISSUE_REFS : $ISSUE_REFS"
-          if [ -z "$ISSUE_REFS" ]; then
+          # Extract issue URLs from markdown hyperlinks [#N](url)
+          # Pattern: [#N](https://github.com/owner/repo/issues/N)
+          ISSUE_URLS=$(echo "$PR_TEXT" | grep -oP '\[#\d+\]\(\K[^)]+(?=\))' | grep 'github.com.*issues' | sort -u | tr '\n' ',' | sed 's/,$//')
+          
+          if [ -z "$ISSUE_URLS" ]; then
             echo "has_issues=false" >> $GITHUB_OUTPUT
             echo "⚠️ No issue references found in PR"
           else
             echo "has_issues=true" >> $GITHUB_OUTPUT
-            echo "issue_refs=$ISSUE_REFS" >> $GITHUB_OUTPUT
-            echo "issue_count=$(echo $ISSUE_REFS | tr ',' '\n' | wc -l)" >> $GITHUB_OUTPUT
-            echo "✅ Found issue references: $ISSUE_REFS"
+            echo "issue_refs=$ISSUE_URLS" >> $GITHUB_OUTPUT
+            echo "issue_count=$(echo $ISSUE_URLS | tr ',' '\n' | wc -l)" >> $GITHUB_OUTPUT
+            echo "✅ Found issue URLs: $ISSUE_URLS"
           fi
       - name: Query GitHub GraphQL for all linked PRs
         id: query_linked_prs
@@ -89,7 +85,9 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.issue_number }}" ]; then
             ISSUE_NUMBERS="${{ github.event.inputs.issue_number }}"
           else
-            ISSUE_NUMBERS="${{ steps.extract_issues.outputs.issue_refs }}"
+            ISSUE_URLS="${{ steps.extract_issues.outputs.issue_refs }}"
+            # Extract issue numbers from URLs for GraphQL queries
+            ISSUE_NUMBERS=$(echo "$ISSUE_URLS" | tr ',' '\n' | grep -oP 'issues/\K\d+' | tr '\n' ',' | sed 's/,$//')
           fi
           
           echo "Querying issues: $ISSUE_NUMBERS"

@@ -1,0 +1,44 @@
+shell: /usr/bin/bash -e {0}
+  env:
+    PRIMARY_BRANCH: main
+    RELEASE_BRANCH: checking-2
+    REQUIRE_EXACT_MATCH: true
+    ALLOW_DRAFT_PRS: false
+    MAX_BRANCH_IMBALANCE: 2
+    OVERRIDE_LABEL: approved:single-branch-merge
+    BLOCK_LABEL: merge-blocked:cross-branch-validation
+Current PR issue URLs: 16,5
+Total PRs to check: 7
+Checking PR #6...
+  PR #6 issue URLs: https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5
+PR_URLS_SORTED : https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5
+CURRENT_URLS_SORTED : 16,5
+  :x: PR #6 has different issue URLs
+Checking PR #7...
+  PR #7 issue URLs: https://github.com/GaniBaig/pr-merge-validation/issues/5
+PR_URLS_SORTED : https://github.com/GaniBaig/pr-merge-validation/issues/5
+CURRENT_URLS_SORTED : 16,5
+  :x: PR #7 has different issue URLs
+Checking PR #9...
+  PR #9 has no issue URLs, skipping
+Checking PR #12...
+  PR #12 issue URLs: https://github.com/GaniBaig/pr-merge-validation/issues/5
+PR_URLS_SORTED : https://github.com/GaniBaig/pr-merge-validation/issues/5
+CURRENT_URLS_SORTED : 16,5
+  :x: PR #12 has different issue URLs
+Checking PR #13...
+  PR #13 has no issue URLs, skipping
+Checking PR #14...
+  PR #14 has no issue URLs, skipping
+Checking PR #15...
+  PR #15 issue URLs: https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5
+PR_URLS_SORTED : https://github.com/GaniBaig/pr-merge-validation/issues/16,https://github.com/GaniBaig/pr-merge-validation/issues/5
+CURRENT_URLS_SORTED : 16,5
+  :x: PR #15 has different issue URLs
+
+:bar_chart: Filtered PR Distribution (matching issue URLs only):
+  - main: 0 PRs ()
+  - checking-2: 0 PRs ()
+
+=== Filtered PRs JSON ===
+[]
