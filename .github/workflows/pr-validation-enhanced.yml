@@ -165,9 +165,11 @@ jobs:
             if [ $? -eq 0 ]; then
               # Extract PRs from this issue and append
               echo "DEBUG: Extracting PRs from response..."
+              cat all_linked_prs_temp.json 
               echo "$RESULT" \
               | jq -c '.data.repository.issue.timelineItems.nodes[].source' \
               >> all_linked_prs_temp.json
+              cat all_linked_prs_temp.json
               echo "DEBUG: Extraction complete"
             else
               echo "⚠️ Failed to query issue #$ISSUE_NUM: $RESULT"
