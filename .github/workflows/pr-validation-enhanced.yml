@@ -300,77 +300,28 @@ jobs:
           cat filtered_prs.json
       - name: Validate issue reference matching
         id: validate_matching
-        if: steps.query_linked_prs.outputs.total_prs > 0
+        if: steps.filter_prs.outputs.filtered_total_prs > 0
         run: |
-          CURRENT_ISSUES="${{ steps.extract_issues.outputs.issue_refs }}"
+          PRIMARY_COUNT=${{ steps.filter_prs.outputs.filtered_primary_count }}
+          RELEASE_COUNT=${{ steps.filter_prs.outputs.filtered_release_count }}
+          PRIMARY_PRS="${{ steps.filter_prs.outputs.filtered_primary_prs }}"
+          RELEASE_PRS="${{ steps.filter_prs.outputs.filtered_release_prs }}"
           
-          # For each PR in comparison branch, check if it has ALL the same issue refs
-          PRIMARY_PRS="${{ steps.query_linked_prs.outputs.primary_prs }}"
-          RELEASE_PRS="${{ steps.query_linked_prs.outputs.release_prs }}"
+          echo "Primary branch (${{ env.PRIMARY_BRANCH }}): $PRIMARY_COUNT PRs"
+          echo "Release branch (${{ env.RELEASE_BRANCH }}): $RELEASE_COUNT PRs"
           
-          # Determine which branch we're validating against
-          if [ "${{ github.event.pull_request.base.ref }}" = "${{ env.PRIMARY_BRANCH }}" ]; then
-            COMPARE_PRS="$RELEASE_PRS"
-            COMPARE_BRANCH="${{ env.RELEASE_BRANCH }}"
+          # Check if PR counts match
+          if [ $PRIMARY_COUNT -eq $RELEASE_COUNT ] && [ $PRIMARY_COUNT -gt 0 ]; then
+            echo "validation_result=success" >> $GITHUB_OUTPUT
+            echo "matching_pr_numbers=$RELEASE_PRS" >> $GITHUB_OUTPUT
+            echo "should_block=false" >> $GITHUB_OUTPUT
+            echo "✅ Validation SUCCESS: PR counts match ($PRIMARY_COUNT in each branch)"
           else
-            COMPARE_PRS="$PRIMARY_PRS"
-            COMPARE_BRANCH="${{ env.PRIMARY_BRANCH }}"
+            echo "validation_result=failure" >> $GITHUB_OUTPUT
+            echo "matching_pr_numbers=" >> $GITHUB_OUTPUT
+            echo "should_block=true" >> $GITHUB_OUTPUT
+            echo "❌ Validation FAILURE: PR count mismatch (Primary: $PRIMARY_COUNT, Release: $RELEASE_COUNT)"
           fi
-          
-          echo "Validating against branch: $COMPARE_BRANCH"
-          echo "Comparing PRs: $COMPARE_PRS"
-          echo "Current PR issues: $CURRENT_ISSUES"
-          
-          EXACT_MATCH_FOUND=false
-          MATCHING_PR_NUMBERS=""
-          
-          # Check each PR in comparison branch
-          for PR_NUM in $(echo "$COMPARE_PRS" | tr ',' ' '); do
-            # Get PR details from our cached data
-            PR_TEXT=$(jq -r --argjson num "$PR_NUM" \
-              '.[] | select(.number == $num) | (.title + " " + (.body // ""))' all_linked_prs.json 2>/dev/null || echo "")
-            
-            echo "Debug PR #$PR_NUM text: $PR_TEXT"
-            
-            if [ -z "$PR_TEXT" ]; then
-              echo "Could not find PR #$PR_NUM in JSON data"
-              continue
-            fi
-            
-            # Extract issue numbers from:
-            # 1. Markdown links: [#5](url)
-            # 2. Plain references: #5  
-            # 3. GitHub URLs: https://github.com/owner/repo/issues/5
-            PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '(?:\[?#\K\d+(?=\]?)|github\.com/[^/]+/[^/]+/issues/\K\d+)' | sort -u | tr '\n' ',' | sed 's/,$//')
-            
-            echo "PR #$PR_NUM has issues: $PR_ISSUES"
-            
-            # Check if this PR has ALL the same issues
-            if [ "${{ env.REQUIRE_EXACT_MATCH }}" = "true" ]; then
-              if [ "$PR_ISSUES" = "$CURRENT_ISSUES" ]; then
-                EXACT_MATCH_FOUND=true
-                MATCHING_PR_NUMBERS="$MATCHING_PR_NUMBERS,$PR_NUM"
-                echo "✅ Exact match found in PR #$PR_NUM"
-              fi
-            else
-              # Check if PR has at least one matching issue
-              for ISSUE in $(echo "$CURRENT_ISSUES" | tr ',' ' '); do
-                # Use exact match with commas to avoid partial matches (e.g., 5 matching 15)
-                if echo ",$PR_ISSUES," | grep -q ",$ISSUE,"; then
-                  EXACT_MATCH_FOUND=true
-                  MATCHING_PR_NUMBERS="$MATCHING_PR_NUMBERS,$PR_NUM"
-                  echo "✅ Partial match found in PR #$PR_NUM (issue: $ISSUE)"
-                  break
-                fi
-              done
-            fi
-          done
-          
-          MATCHING_PR_NUMBERS=$(echo "$MATCHING_PR_NUMBERS" | sed 's/^,//')
-          
-          echo "exact_match_found=$EXACT_MATCH_FOUND" >> $GITHUB_OUTPUT
-          echo "matching_pr_numbers=$MATCHING_PR_NUMBERS" >> $GITHUB_OUTPUT
-          echo "compare_branch=$COMPARE_BRANCH" >> $GITHUB_OUTPUT
       - name: Check branch imbalance
         id: check_imbalance
         if: steps.query_linked_prs.outputs.total_prs > 0
