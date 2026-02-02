@@ -14,7 +14,7 @@ branches:
   
   # Release branch (update per release cycle)
   release:
-    name: "release-5.3.1"
+    name: "checking-2"
     description: "Current release branch"
   
   # Additional monitored branches (optional)
