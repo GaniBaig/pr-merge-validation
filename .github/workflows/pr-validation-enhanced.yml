@@ -245,27 +245,29 @@ jobs:
           
           echo "Validating against branch: $COMPARE_BRANCH"
           echo "Comparing PRs: $COMPARE_PRS"
+          echo "Current PR issues: $CURRENT_ISSUES"
           
           EXACT_MATCH_FOUND=false
           MATCHING_PR_NUMBERS=""
           
           # Check each PR in comparison branch
-          for PR_NUM in $(echo $COMPARE_PRS | tr ',' ' '); do
-            # Get PR details from our cached data
+          for PR_NUM in $(echo "$COMPARE_PRS" | tr ',' ' '); do
             # Get PR details from our cached data
             PR_TEXT=$(jq -r --argjson num "$PR_NUM" \
               '.[] | select(.number == $num) | (.title + " " + (.body // ""))' all_linked_prs.json 2>/dev/null || echo "")
-            echo $PR_TEXT
+            
+            echo "Debug PR #$PR_NUM text: $PR_TEXT"
+            
             if [ -z "$PR_TEXT" ]; then
               echo "Could not find PR #$PR_NUM in JSON data"
               continue
             fi
             
-            # Extract issue numbers from markdown hyperlinks [#N](url) and plain #N references
-            # First extract from markdown links, then from plain references, then combine and deduplicate
-            PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '\[#\K\d+(?=\])' | sort -u | tr '\n' ',')
-            PLAIN_ISSUES=$(echo "$PR_TEXT" | grep -oP '(?<!\[)#\K\d+(?!\])' | sort -u | tr '\n' ',')
-            PR_ISSUES=$(echo "${PR_ISSUES}${PLAIN_ISSUES}" | tr ',' '\n' | grep -v '^$' | sort -u | tr '\n' ',' | sed 's/,$//')
+            # Extract issue numbers from:
+            # 1. Markdown links: [#5](url)
+            # 2. Plain references: #5  
+            # 3. GitHub URLs: https://github.com/owner/repo/issues/5
+            PR_ISSUES=$(echo "$PR_TEXT" | grep -oP '(?:\[?#\K\d+(?=\]?)|github\.com/[^/]+/[^/]+/issues/\K\d+)' | sort -u | tr '\n' ',' | sed 's/,$//')
             
             echo "PR #$PR_NUM has issues: $PR_ISSUES"
             
@@ -278,11 +280,12 @@ jobs:
               fi
             else
               # Check if PR has at least one matching issue
-              for ISSUE in $(echo $CURRENT_ISSUES | tr ',' ' '); do
-                if echo "$PR_ISSUES" | grep -q "$ISSUE"; then
+              for ISSUE in $(echo "$CURRENT_ISSUES" | tr ',' ' '); do
+                # Use exact match with commas to avoid partial matches (e.g., 5 matching 15)
+                if echo ",$PR_ISSUES," | grep -q ",$ISSUE,"; then
                   EXACT_MATCH_FOUND=true
                   MATCHING_PR_NUMBERS="$MATCHING_PR_NUMBERS,$PR_NUM"
-                  echo "✅ Partial match found in PR #$PR_NUM"
+                  echo "✅ Partial match found in PR #$PR_NUM (issue: $ISSUE)"
                   break
                 fi
               done
@@ -294,7 +297,6 @@ jobs:
           echo "exact_match_found=$EXACT_MATCH_FOUND" >> $GITHUB_OUTPUT
           echo "matching_pr_numbers=$MATCHING_PR_NUMBERS" >> $GITHUB_OUTPUT
           echo "compare_branch=$COMPARE_BRANCH" >> $GITHUB_OUTPUT
-
       - name: Check branch imbalance
         id: check_imbalance
         if: steps.query_linked_prs.outputs.total_prs > 0
