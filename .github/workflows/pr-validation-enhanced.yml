@@ -338,6 +338,13 @@ jobs:
             const releaseBranch = '${{ env.RELEASE_BRANCH }}';
             const compareBranch = targetBranch === primaryBranch ? releaseBranch : primaryBranch;
             
+            // Format issue references for display
+            const issueUrls = issueRefs.split(',').filter(url => url);
+            const issueLinks = issueUrls.map(url => {
+              const issueNum = url.match(/issues\/(\d+)/)?.[1];
+              return issueNum ? `[#${issueNum}](${url})` : url;
+            }).join(', ');
+            
             let commentBody;
             
             if (validationResult === 'success') {
@@ -351,7 +358,7 @@ jobs:
               - **${primaryBranch}:** ${primaryCount} PR(s) ${primaryPRs ? `(#${primaryPRs.split(',').join(', #')})` : ''}
               - **${releaseBranch}:** ${releaseCount} PR(s) ${releasePRs ? `(#${releasePRs.split(',').join(', #')})` : ''}
               
-              **Issue References:** ${issueRefs}`;
+              **Issue References:** ${issueLinks}`;
               
               // Remove blocking label
               try {
@@ -376,7 +383,7 @@ jobs:
               - **${primaryBranch}:** ${primaryCount} PR(s) ${primaryPRs ? `(#${primaryPRs.split(',').join(', #')})` : ''}
               - **${releaseBranch}:** ${releaseCount} PR(s) ${releasePRs ? `(#${releasePRs.split(',').join(', #')})` : ''}
               
-              **Issue References:** ${issueRefs}
+              **Issue References:** ${issueLinks}
               
               ---
               
