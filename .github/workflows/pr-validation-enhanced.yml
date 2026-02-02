@@ -82,10 +82,11 @@ jobs:
         run: |
           echo "=== Debug extract_issues outputs ==="
           echo "has_issues: ${{ steps.extract_issues.outputs.has_issues }}"
-          echo "issue_refs: '${{ steps.extract_issues.outputs.issue_refs }}'"
-          echo "Length: ${#{ steps.extract_issues.outputs.issue_refs }}"
+          ISSUE_REFS="${{ steps.extract_issues.outputs.issue_refs }}"
+          echo "issue_refs: '$ISSUE_REFS'"
+          echo "Length: ${#ISSUE_REFS}"
           echo "As array:"
-          IFS=',' read -ra ISSUES <<< "${{ steps.extract_issues.outputs.issue_refs }}"
+          IFS=',' read -ra ISSUES <<< "$ISSUE_REFS"
           for i in "${!ISSUES[@]}"; do
             echo "  [$i] = '${ISSUES[$i]}'"
           done
