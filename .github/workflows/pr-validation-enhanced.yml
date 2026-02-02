@@ -166,7 +166,7 @@ jobs:
               # Extract PRs from this issue and append
               echo "DEBUG: Extracting PRs from response..."
               echo "$RESULT" \
-              | jq -c '.data.repository.issue.timelineItems.nodes[].source | select(. != null)' \
+              | jq -c '.data.repository.issue.timelineItems.nodes[].source' \
               >> all_linked_prs_temp.json
               echo "DEBUG: Extraction complete"
             else
