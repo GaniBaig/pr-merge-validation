@@ -322,6 +322,122 @@ jobs:
             echo "should_block=true" >> $GITHUB_OUTPUT
             echo "❌ Validation FAILURE: PR count mismatch (Primary: $PRIMARY_COUNT, Release: $RELEASE_COUNT)"
           fi
+      - name: Post validation result to PR
+        if: steps.validate_matching.outputs.validation_result && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const validationResult = '${{ steps.validate_matching.outputs.validation_result }}';
+            const primaryCount = '${{ steps.filter_prs.outputs.filtered_primary_count }}';
+            const releaseCount = '${{ steps.filter_prs.outputs.filtered_release_count }}';
+            const primaryPRs = '${{ steps.filter_prs.outputs.filtered_primary_prs }}';
+            const releasePRs = '${{ steps.filter_prs.outputs.filtered_release_prs }}';
+            const issueRefs = '${{ steps.extract_issues.outputs.issue_refs }}';
+            const targetBranch = '${{ github.event.pull_request.base.ref }}';
+            const primaryBranch = '${{ env.PRIMARY_BRANCH }}';
+            const releaseBranch = '${{ env.RELEASE_BRANCH }}';
+            const compareBranch = targetBranch === primaryBranch ? releaseBranch : primaryBranch;
+            
+            let commentBody;
+            
+            if (validationResult === 'success') {
+              commentBody = `✅ **Cross-Branch Validation: PASSED**
+              
+              This PR references issue(s) and corresponding PR(s) exist in both branches with matching issue references.
+              
+              **Status:** Merge validation successful - both branches will receive this fix.
+              
+              ### 📊 PR Distribution
+              - **${primaryBranch}:** ${primaryCount} PR(s) ${primaryPRs ? `(#${primaryPRs.split(',').join(', #')})` : ''}
+              - **${releaseBranch}:** ${releaseCount} PR(s) ${releasePRs ? `(#${releasePRs.split(',').join(', #')})` : ''}
+              
+              **Issue References:** ${issueRefs}`;
+              
+              // Remove blocking label
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  name: '${{ env.BLOCK_LABEL }}'
+                });
+              } catch (error) {
+                // Label might not exist
+              }
+              
+            } else {
+              commentBody = `⚠️ **Cross-Branch Validation: REQUIRES REVIEW**
+              
+              This PR references issue(s) but **PR count mismatch** detected between branches.
+              
+              **⚠️ MERGE BLOCKED - REVIEWER ACTION REQUIRED**
+              
+              ### 📊 PR Distribution
+              - **${primaryBranch}:** ${primaryCount} PR(s) ${primaryPRs ? `(#${primaryPRs.split(',').join(', #')})` : ''}
+              - **${releaseBranch}:** ${releaseCount} PR(s) ${releasePRs ? `(#${releasePRs.split(',').join(', #')})` : ''}
+              
+              **Issue References:** ${issueRefs}
+              
+              ---
+              
+              ### Override Instructions
+              
+              If this fix is intentionally being merged into **only** the \`${targetBranch}\` branch, a reviewer must:
+              
+              1. **Acknowledge the risk** of potential inconsistency between branches
+              2. **Add the label** \`${{ env.OVERRIDE_LABEL }}\` to this PR
+              3. **Comment** with justification for the single-branch merge
+              
+              **Example justification:**
+              > "Approved for single-branch merge. This fix is specific to ${targetBranch} and does not apply to ${compareBranch} because [reason]."
+              
+              ---
+              
+              ### Creating a Matching PR
+              
+              Alternatively, create a PR for \`${compareBranch}\` that:
+              - References the same issue(s)
+              - Contains the equivalent fix for that branch
+              
+              Once the matching PR is created, re-run this workflow by updating this PR.`;
+              
+              // Add blocking label
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: ['${{ env.BLOCK_LABEL }}']
+              });
+            }
+            
+            // Post or update comment
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            
+            const botComment = comments.data.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('Cross-Branch Validation')
+            );
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: commentBody
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: commentBody
+              });
+            }
+      
       - name: Check branch imbalance
         id: check_imbalance
         if: steps.query_linked_prs.outputs.total_prs > 0
