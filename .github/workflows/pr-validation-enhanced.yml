@@ -218,6 +218,102 @@ jobs:
           echo "  - ${{ env.RELEASE_BRANCH }}: $RELEASE_COUNT PRs"
           echo "=== all characters ==="
           cat all_linked_prs.json
+      - name: Filter PRs by matching issue URLs
+        id: filter_prs
+        if: steps.extract_issues.outputs.has_issues == 'true' && steps.query_linked_prs.outputs.total_prs > 0
+        run: |
+          CURRENT_ISSUE_URLS="${{ steps.extract_issues.outputs.issue_refs }}"
+          echo "Current PR issue URLs: $CURRENT_ISSUE_URLS"
+          
+          # Convert comma-separated URLs to array for processing
+          IFS=',' read -ra CURRENT_URLS_ARRAY <<< "$CURRENT_ISSUE_URLS"
+          
+          # Create a filtered JSON with only PRs that have matching issue URLs
+          echo "[]" > filtered_prs.json
+          
+          # Get total number of PRs
+          TOTAL_PRS=$(jq 'length' all_linked_prs.json)
+          echo "Total PRs to check: $TOTAL_PRS"
+          
+          # Check each PR
+          for ((i=0; i<$TOTAL_PRS; i++)); do
+            PR_NUM=$(jq -r ".[$i].number" all_linked_prs.json)
+            PR_BODY=$(jq -r ".[$i].body // empty" all_linked_prs.json)
+            PR_TITLE=$(jq -r ".[$i].title // empty" all_linked_prs.json)
+            PR_TEXT="$PR_TITLE $PR_BODY"
+            
+            echo "Checking PR #$PR_NUM..."
+            
+            # Extract issue URLs from this PR's body
+            PR_ISSUE_URLS=$(echo "$PR_TEXT" | grep -oP '\[#\d+\]\(\K[^)]+(?=\))' | grep 'github.com.*issues' | sort -u | tr '\n' ',' | sed 's/,$//')
+            
+            if [ -z "$PR_ISSUE_URLS" ]; then
+              echo "  PR #$PR_NUM has no issue URLs, skipping"
+              continue
+            fi
+            
+            echo "  PR #$PR_NUM issue URLs: $PR_ISSUE_URLS"
+            
+            # Convert PR URLs to sorted array for comparison
+            IFS=',' read -ra PR_URLS_ARRAY <<< "$PR_ISSUE_URLS"
+            PR_URLS_SORTED=$(printf '%s\n' "${PR_URLS_ARRAY[@]}" | sort | tr '\n' ',' | sed 's/,$//')
+            CURRENT_URLS_SORTED=$(printf '%s\n' "${CURRENT_URLS_ARRAY[@]}" | sort | tr '\n' ',' | sed 's/,$//')
+            
+            # Check if URLs match exactly
+            if [ "$PR_URLS_SORTED" = "$CURRENT_URLS_SORTED" ]; then
+              echo "  :white_check_mark: PR #$PR_NUM has matching issue URLs"
+              # Add this PR to filtered list
+              jq ".[$i]" all_linked_prs.json | jq -s '. + input' filtered_prs.json - > filtered_prs_temp.json
+              mv filtered_prs_temp.json filtered_prs.json
+            else
+              echo "  :x: PR #$PR_NUM has different issue URLs"
+            fi
+          done
+          
+          # Count filtered PRs by branch
+          if [ "${{ env.ALLOW_DRAFT_PRS }}" = "false" ]; then
+            FILTER_DRAFT='and .isDraft == false'
+          else
+            FILTER_DRAFT=''
+          fi
+          
+          FILTERED_PRIMARY_PRS=$(jq -r --arg branch "${{ env.PRIMARY_BRANCH }}" \
+            '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
+            filtered_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
+          
+          FILTERED_RELEASE_PRS=$(jq -r --arg branch "${{ env.RELEASE_BRANCH }}" \
+            '.[] | select(.baseRefName == $branch and .state == "OPEN" '"$FILTER_DRAFT"') | .number' \
+            filtered_prs.json 2>/dev/null | sort -u | tr '\n' ' ')
+          
+          # Count filtered PRs safely
+          if [ -z "$FILTERED_PRIMARY_PRS" ] || [ "$FILTERED_PRIMARY_PRS" = " " ]; then
+            FILTERED_PRIMARY_COUNT=0
+            FILTERED_PRIMARY_PRS=""
+          else
+            FILTERED_PRIMARY_COUNT=$(echo "$FILTERED_PRIMARY_PRS" | wc -w)
+          fi
+          
+          if [ -z "$FILTERED_RELEASE_PRS" ] || [ "$FILTERED_RELEASE_PRS" = " " ]; then
+            FILTERED_RELEASE_COUNT=0
+            FILTERED_RELEASE_PRS=""
+          else
+            FILTERED_RELEASE_COUNT=$(echo "$FILTERED_RELEASE_PRS" | wc -w)
+          fi
+          
+          # Output filtered results
+          echo "filtered_primary_prs=$(echo $FILTERED_PRIMARY_PRS | tr ' ' ','  | sed 's/,$//' | sed 's/^,//')" >> $GITHUB_OUTPUT
+          echo "filtered_release_prs=$(echo $FILTERED_RELEASE_PRS | tr ' ' ',' | sed 's/,$//' | sed 's/^,//')" >> $GITHUB_OUTPUT
+          echo "filtered_primary_count=$FILTERED_PRIMARY_COUNT" >> $GITHUB_OUTPUT
+          echo "filtered_release_count=$FILTERED_RELEASE_COUNT" >> $GITHUB_OUTPUT
+          echo "filtered_total_prs=$((FILTERED_PRIMARY_COUNT + FILTERED_RELEASE_COUNT))" >> $GITHUB_OUTPUT
+          
+          echo ""
+          echo ":bar_chart: Filtered PR Distribution (matching issue URLs only):"
+          echo "  - ${{ env.PRIMARY_BRANCH }}: $FILTERED_PRIMARY_COUNT PRs ($FILTERED_PRIMARY_PRS)"
+          echo "  - ${{ env.RELEASE_BRANCH }}: $FILTERED_RELEASE_COUNT PRs ($FILTERED_RELEASE_PRS)"
+          echo ""
+          echo "=== Filtered PRs JSON ==="
+          cat filtered_prs.json
       - name: Validate issue reference matching
         id: validate_matching
         if: steps.query_linked_prs.outputs.total_prs > 0
