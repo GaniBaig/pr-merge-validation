@@ -77,7 +77,18 @@ jobs:
             echo "issue_count=$(echo $ISSUE_REFS | tr ',' '\n' | wc -l)" >> $GITHUB_OUTPUT
             echo "✅ Found issue references: $ISSUE_REFS"
           fi
-
+      - name: Debug - Check extracted issues
+        if: steps.extract_issues.outputs.has_issues == 'true'
+        run: |
+          echo "=== Debug extract_issues outputs ==="
+          echo "has_issues: ${{ steps.extract_issues.outputs.has_issues }}"
+          echo "issue_refs: '${{ steps.extract_issues.outputs.issue_refs }}'"
+          echo "Length: ${#{ steps.extract_issues.outputs.issue_refs }}"
+          echo "As array:"
+          IFS=',' read -ra ISSUES <<< "${{ steps.extract_issues.outputs.issue_refs }}"
+          for i in "${!ISSUES[@]}"; do
+            echo "  [$i] = '${ISSUES[$i]}'"
+          done
       - name: Query GitHub GraphQL for all linked PRs
         id: query_linked_prs
         if: steps.extract_issues.outputs.has_issues == 'true' || github.event.inputs.issue_number
