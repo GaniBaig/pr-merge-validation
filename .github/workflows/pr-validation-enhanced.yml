@@ -255,7 +255,7 @@ jobs:
             # Get PR details from our cached data
             PR_TEXT=$(jq -r --argjson num "$PR_NUM" \
               '.[] | select(.number == $num) | (.title + " " + (.body // ""))' all_linked_prs.json 2>/dev/null || echo "")
-            
+            echo $PR_TEXT
             if [ -z "$PR_TEXT" ]; then
               echo "Could not find PR #$PR_NUM in JSON data"
               continue
