@@ -97,7 +97,8 @@ jobs:
           > all_linked_prs_temp.json
           
           # Query each issue individually using GraphQL
-          for ISSUE_REF in $(echo "$ISSUE_NUMBERS" | tr ',' ' '); do
+          IFS=',' read -ra ISSUE_ARRAY <<< "$ISSUE_NUMBERS"
+          for ISSUE_REF in "${ISSUE_ARRAY[@]}"; do
             ISSUE_NUM=$(echo "$ISSUE_REF" | sed 's/#//g')
             echo "=== DEBUG: Querying issue #$ISSUE_NUM ==="
             
