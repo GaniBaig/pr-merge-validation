@@ -260,6 +260,8 @@ jobs:
             CURRENT_URLS_SORTED=$(printf '%s\n' "${CURRENT_URLS_ARRAY[@]}" | sort | tr '\n' ',' | sed 's/,$//')
             
             # Check if URLs match exactly
+            echo "PR_URLS_SORTED : $PR_URLS_SORTED"
+            echo "CURRENT_URLS_SORTED : $CURRENT_URLS_SORTED"
             if [ "$PR_URLS_SORTED" = "$CURRENT_URLS_SORTED" ]; then
               echo "  :white_check_mark: PR #$PR_NUM has matching issue URLs"
               # Add this PR to filtered list
