@@ -210,7 +210,7 @@ jobs:
           echo "primary_count=$PRIMARY_COUNT" >> $GITHUB_OUTPUT
           echo "release_count=$RELEASE_COUNT" >> $GITHUB_OUTPUT
           echo "total_prs=$((PRIMARY_COUNT + RELEASE_COUNT))" >> $GITHUB_OUTPUT
-          echo "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
           echo "📊 PR Distribution:"
           echo "  - ${{ env.PRIMARY_BRANCH }}: $PRIMARY_COUNT PRs"
           echo "  - ${{ env.RELEASE_BRANCH }}: $RELEASE_COUNT PRs"
